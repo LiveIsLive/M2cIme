@@ -219,6 +219,12 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
+            // 全匹配（词条拼音与输入串完全一致）的候选优先于一切前缀匹配，
+            // 例如输入 "nihao" 时「你好」排在「你」之前。
+            const bool aExact = (a.pinyin.size() == plen);
+            const bool bExact = (b.pinyin.size() == plen);
+            if (aExact != bExact) return aExact;
+
             long long sa = scoreOf(a);
             long long sb = scoreOf(b);
             if (sa != sb) return sa > sb;
