@@ -1,0 +1,70 @@
+#pragma once
+
+// 拼音输入法引擎 —— 对外导出的 C 接口
+// 支持三种输入模式：英文 / 普通话 / 粤语
+// 粤语与普通话模式均基于汉语拼音输入汉字，差异仅在于词库优先级。
+
+// 输入模式
+typedef enum ImeInputMode
+{
+    IME_MODE_ENGLISH   = 0,  // 英文：直接输出 ASCII，不做拼音转换
+    IME_MODE_MANDARIN  = 1,  // 普通话：粤语词库强制排到最低
+    IME_MODE_CANTONESE = 2,  // 粤语：粤语词库强制排到最高
+} ImeInputMode;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// 初始化引擎（加载词库）。首次调用 IME_OnChar 等接口时会自动初始化，
+// 也可显式调用以提前加载。
+__declspec(dllexport) void IME_Init();
+
+// 切换 / 查询输入模式
+__declspec(dllexport) void IME_SetMode(ImeInputMode mode);
+__declspec(dllexport) ImeInputMode IME_GetMode();
+
+// 处理一个按键字符（a-z / A-Z / 空格 / 数字 / 标点 / 回车）。
+// 返回 true 表示该键已被引擎消费（前端不应再默认处理），
+// 返回 false 表示引擎未消费（前端按默认行为处理）。
+__declspec(dllexport) bool IME_OnChar(char ch);
+
+// 处理退格键。组合串非空时删除最后一个拼音字符并返回 true。
+__declspec(dllexport) bool IME_OnBackspace();
+
+// 获取当前组合串（正在输入的拼音）。
+// buf 为 wchar_t 缓冲区，bufLen 为容量（含结尾 '\0'）。
+// 返回写入的字符数（不含 '\0'）。
+__declspec(dllexport) int IME_GetComposition(wchar_t* buf, int bufLen);
+
+// 获取候选词数量
+__declspec(dllexport) int IME_GetCandidateCount();
+
+// 获取第 index 个候选词（0 基）。返回写入字符数（不含 '\0'）。
+__declspec(dllexport) int IME_GetCandidate(int index, wchar_t* buf, int bufLen);
+
+// 获取第 index 个候选词的来源：0=普通话, 1=粤语
+__declspec(dllexport) int IME_GetCandidateSource(int index);
+
+// 选择第 index 个候选词并提交。提交后的文本可通过 IME_GetCommitted 读取。
+// 返回 true 表示成功提交。
+__declspec(dllexport) bool IME_SelectCandidate(int index);
+
+// 提交当前组合串中的第一个候选词（等价于按空格）。
+__declspec(dllexport) bool IME_CommitFirst();
+
+// 获取最近一次提交的文本。前端读取后应调用 IME_ClearCommitted 清空。
+__declspec(dllexport) int IME_GetCommitted(wchar_t* buf, int bufLen);
+
+// 清空已提交文本缓冲
+__declspec(dllexport) void IME_ClearCommitted();
+
+// 清空当前组合串与候选（不提交）
+__declspec(dllexport) void IME_ClearComposition();
+
+// 引擎是否处于有组合串的输入状态
+__declspec(dllexport) bool IME_HasComposition();
+
+#ifdef __cplusplus
+}
+#endif
