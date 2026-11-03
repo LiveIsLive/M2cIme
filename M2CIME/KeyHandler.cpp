@@ -453,9 +453,11 @@ void CTextService::OnCandidateClicked(int itemIndexOnPage)
     if (FAILED(_pThreadMgr->GetFocus(&pDocMgr)) || !pDocMgr) return;
 
     ITfContext* pContext = nullptr;
+    RECT caretRect = {};
+    bool hasCaretRect = false;
     if (SUCCEEDED(pDocMgr->GetBase(&pContext)) && pContext)
     {
-        CEditSession session([this, pContext, idx](TfEditCookie ec) -> HRESULT
+        CEditSession session([this, pContext, idx, &caretRect, &hasCaretRect](TfEditCookie ec) -> HRESULT
         {
             if (IME_SelectCandidate(idx))
             {
@@ -464,6 +466,12 @@ void CTextService::OnCandidateClicked(int itemIndexOnPage)
                 IME_ClearCommitted();
                 if (buf[0])
                     _InsertTextAtSelection(ec, pContext, buf, (LONG)wcslen(buf));
+            }
+            RECT rc = {};
+            if (_GetCaretRect(ec, pContext, &rc))
+            {
+                caretRect = rc;
+                hasCaretRect = true;
             }
             return S_OK;
         });
@@ -474,5 +482,12 @@ void CTextService::OnCandidateClicked(int itemIndexOnPage)
     pDocMgr->Release();
 
     _pageIndex = 0;
-    if (_pCandidateWnd) _pCandidateWnd->_Hide();
+    if (_pCandidateWnd)
+    {
+        // 选词后若组合串仍有剩余拼音，保持候选窗并刷新候选（连续选词）
+        if (IME_HasComposition())
+            _UpdateCandidateWindow(nullptr, hasCaretRect ? &caretRect : nullptr);
+        else
+            _pCandidateWnd->_Hide();
+    }
 }

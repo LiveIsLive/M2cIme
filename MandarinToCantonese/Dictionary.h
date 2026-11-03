@@ -15,8 +15,12 @@ struct DictEntry
 {
     std::wstring word;     // 汉字
     std::string  pinyin;   // 连续拼音（小写，无声调，如 "nihao"）
+    std::string  initials; // 各音节声母拼接（如 "nihao" -> "nh"）
     int          weight;   // 词频权重（越大越靠前）
     LangSource   source;   // 来源词库
+    bool         nasalOnly = false;   // 首音节是鼻音自成音节（n/ng/m/hm/hng，如「嗯」「呒」），没有真正声母
+    bool         validPinyin = true;  // 拼音能否完整切分为合法音节（"nihao"=ni+hao 为 true；"n" 为 false）
+    bool         viaInitials = false; // 查询结果标记：是否仅靠声母简拼匹配（词库本身不使用）
 };
 
 // 词典：从外置 RIME 格式词库文件（.dict.yaml）加载普通话 + 粤语词条，
@@ -36,8 +40,10 @@ public:
 
     // 按拼音（连续串）查找候选词。
     // mode: 0 = 普通话模式（粤语词条排最后），1 = 粤语模式（粤语词条排最前）
+    // initialsQuery: 原始组合串，用于声母简拼匹配（如 "nh" -> 你好）；留空则不启用。
     // 返回按优先级排序后的候选列表。
-    std::vector<DictEntry> GetCandidates(const std::string& pinyin, int mode) const;
+    std::vector<DictEntry> GetCandidates(const std::string& pinyin, int mode,
+                                         const std::string& initialsQuery = std::string()) const;
 
     // 直接添加一条词条（供扩展/测试使用）
     void AddEntry(const std::wstring& word, const std::string& pinyin,

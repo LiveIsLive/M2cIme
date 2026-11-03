@@ -27,6 +27,8 @@ __declspec(dllexport) ImeInputMode IME_GetMode();
 // 处理一个按键字符（a-z / A-Z / 空格 / 数字 / 标点 / 回车）。
 // 返回 true 表示该键已被引擎消费（前端不应再默认处理），
 // 返回 false 表示引擎未消费（前端按默认行为处理）。
+// 注：只输入声母（如 n / zh / b）时同样会产生候选词，列出拼音以该声母开头的词；
+// 依次输入各字声母（如 nh / xx）也会列出对应词语（你好 / 谢谢）。
 __declspec(dllexport) bool IME_OnChar(char ch);
 
 // 处理退格键。组合串非空时删除最后一个拼音字符并返回 true。
@@ -47,6 +49,8 @@ __declspec(dllexport) int IME_GetCandidate(int index, wchar_t* buf, int bufLen);
 __declspec(dllexport) int IME_GetCandidateSource(int index);
 
 // 选择第 index 个候选词并提交。提交后的文本可通过 IME_GetCommitted 读取。
+// 支持连续选词：若该候选只覆盖组合串的前半部分拼音（如输入 doubao 时选「豆」），
+// 剩余拼音（bao）会保留在组合串中并刷新候选，可继续选词。
 // 返回 true 表示成功提交。
 __declspec(dllexport) bool IME_SelectCandidate(int index);
 

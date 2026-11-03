@@ -12,7 +12,7 @@ if %errorlevel% neq 0 (
 set DIR=%~dp0
 
 echo 正在注册 64 位输入法组件...
-regsvr32 /s "%DIR%M2CIME\x64\Release\M2CIME.dll"
+regsvr32 /s "%DIR%x64\Release\M2CIME.dll"
 if %errorlevel% neq 0 (
     echo [错误] 64 位注册失败。
     pause
@@ -20,7 +20,7 @@ if %errorlevel% neq 0 (
 )
 
 echo 正在注册 32 位输入法组件（WOW64）...
-"%SystemRoot%\SysWOW64\regsvr32.exe" /s "%DIR%M2CIME\Release\M2CIME32.dll"
+"%SystemRoot%\SysWOW64\regsvr32.exe" /s "%DIR%Release\M2CIME32.dll"
 if %errorlevel% neq 0 (
     echo [错误] 32 位注册失败。
     pause

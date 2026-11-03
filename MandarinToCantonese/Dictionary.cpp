@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Dictionary.h"
+#include "PinyinSegmenter.h"
 
 #include <algorithm>
 #include <fstream>
@@ -7,6 +8,47 @@
 
 namespace
 {
+    // 取一个音节的声母：zh/ch/sh 取两个字母，其它取首字母
+    //（零声母音节如 a/ai/an/er 取首字母，便于用 a 简拼到「爱」「安」等）
+    std::string InitialOfSyllable(const std::string& syllable)
+    {
+        if (syllable.size() >= 2)
+        {
+            const std::string head = syllable.substr(0, 2);
+            if (head == "zh" || head == "ch" || head == "sh") return head;
+        }
+        return syllable.substr(0, 1);
+    }
+
+    // 首音节是否为「鼻音自成音节」：n / ng / m / hm / hng（如「嗯」「呒」）。
+    // 这类音节属于韵母性质（嗯=en/ng），没有真正的声母，
+    // 输入单字母 n / m 时应排在真正声母字（你、那、吗、们…）之后。
+    bool IsNasalOnlyPinyin(const std::string& pinyin)
+    {
+        if (pinyin.size() == 1) return pinyin == "n" || pinyin == "m";
+        if (pinyin.compare(0, 3, "hng") == 0) return true;
+        const std::string head = pinyin.substr(0, 2);
+        return head == "ng" || head == "hm";
+    }
+
+    // 拼音串能否完整切分为合法音节（"nihao" -> ni+hao 成立；单独的 "n" 不成立）
+    bool IsValidPinyinSequence(const std::string& pinyin)
+    {
+        std::string remainder;
+        const auto syllables = PinyinSegmenter::Segment(pinyin, &remainder);
+        return !syllables.empty() && remainder.empty();
+    }
+
+    // 由连续拼音生成各音节声母拼接（"nihao" -> "nh"）
+    std::string BuildInitials(const std::string& pinyin)
+    {
+        std::string out;
+        std::string remainder;
+        for (const auto& s : PinyinSegmenter::Segment(pinyin, &remainder))
+            out += InitialOfSyllable(s);
+        return out;
+    }
+
     // 外置词库文件名（相对于 DLL 所在目录 / 安装目录）
     const wchar_t* kDictSubdir      = L"dicts";
     const wchar_t* kMandarinDictFile = L"pinyin_simp.dict.yaml";
@@ -153,7 +195,11 @@ bool Dictionary::LoadFromFile(const std::wstring& path, LangSource source, bool 
         std::wstring word = Utf8ToWide(word8);
         if (word.empty()) continue;
 
-        entries_.push_back({ std::move(word), std::move(key), weight, source });
+        const std::string initials = BuildInitials(key);
+        const bool nasalOnly = IsNasalOnlyPinyin(key);
+        const bool validPinyin = IsValidPinyinSequence(key);
+        entries_.push_back({ std::move(word), std::move(key), std::move(initials), weight, source,
+                             nasalOnly, validPinyin });
         ++added;
     }
 
@@ -163,33 +209,49 @@ bool Dictionary::LoadFromFile(const std::wstring& path, LangSource source, bool 
 void Dictionary::AddEntry(const std::wstring& word, const std::string& pinyin,
                           int weight, LangSource source)
 {
-    entries_.push_back({ word, pinyin, weight, source });
+    entries_.push_back({ word, pinyin, BuildInitials(pinyin), weight, source,
+                         IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
 }
 
-std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int mode) const
+std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int mode,
+                                                 const std::string& initialsQuery) const
 {
     std::vector<DictEntry> result;
     if (pinyin.empty()) return result;
 
     const size_t plen = pinyin.size();
+    const size_t qlen = initialsQuery.size();
 
-    // 匹配规则：词条拼音以输入串开头（输入了词的前缀）
-    // 或输入串以词条拼音开头（输入了更多，词是前缀的一部分）
+    // 匹配规则：
+    //  1) 拼音匹配：词条拼音以输入串开头（输入了词的前缀），
+    //     或输入串以词条拼音开头（输入了更多，词是前缀的一部分）；
+    //  2) 声母匹配：输入串恰好是各音节声母拼接的前缀（如输入 nh 命中「你好」）。
     for (const auto& e : entries_)
     {
         const size_t elen = e.pinyin.size();
-        bool match = false;
+        bool pinyinMatch = false;
         if (elen >= plen)
         {
             // 词条拼音以输入串开头：用户可能还在输入该词
-            match = (e.pinyin.compare(0, plen, pinyin) == 0);
+            pinyinMatch = (e.pinyin.compare(0, plen, pinyin) == 0);
         }
         else
         {
             // 输入串以词条拼音开头：词已完整，可能后面还跟着下一个词的拼音
-            match = (pinyin.compare(0, elen, e.pinyin) == 0);
+            pinyinMatch = (pinyin.compare(0, elen, e.pinyin) == 0);
         }
-        if (match) result.push_back(e);
+
+        bool initialsMatch = false;
+        if (!pinyinMatch && qlen > 0 && e.initials.size() >= qlen)
+        {
+            initialsMatch = (e.initials.compare(0, qlen, initialsQuery) == 0);
+        }
+
+        if (pinyinMatch || initialsMatch)
+        {
+            result.push_back(e);
+            result.back().viaInitials = initialsMatch;
+        }
     }
 
     // ===== 基于模式的优先级排序 =====
@@ -219,11 +281,35 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
-            // 全匹配（词条拼音与输入串完全一致）的候选优先于一切前缀匹配，
-            // 例如输入 "nihao" 时「你好」排在「你」之前。
-            const bool aExact = (a.pinyin.size() == plen);
-            const bool bExact = (b.pinyin.size() == plen);
-            if (aExact != bExact) return aExact;
+            // 匹配优先级（高→低）：
+            //  0 拼音完全匹配 + 可完整切分      （如输入 ni → 你；nihao → 你好）
+            //  1 声母完全匹配                   （如输入 nh → 你好）
+            //  2 拼音前缀匹配 + 可完整切分 + 单字（如输入 n → 你/那/年…）
+            //  3 拼音前缀匹配 + 可完整切分 + 多字词（如输入 n → 那个/你们…）
+            //  4 声母前缀匹配
+            //  5 拼音匹配但切分不完整 / 鼻音自成音节（如输入 n → 嗯「拼音 n/ng 不是真正声母」）
+            //
+            // 关键：
+            //  1) 输入单个字母时，先列该声母的单字，再列词组，最后才是「嗯」这类非真正声母；
+            //  2) 嗯(pinyin=n) 这种残拼音完全匹配不会压过「你」(ni)；
+            //  3) 嗯(ng)、呒(m) 这类鼻音自成音节排在所有 n/m 声母字之后；
+            //  4) 多字词（你好=nihao）能完整切分，仍按完全匹配拿最高优先级；
+            //  5) 输入完整音节（如 ng、en）时仍按完全匹配优先。
+            auto rankOf = [&](const DictEntry& e) -> int
+            {
+                if (!e.viaInitials)
+                {
+                    const bool singleChar = (e.word.size() == 1);
+                    if (e.pinyin.size() == plen)
+                        return e.validPinyin ? 0 : 5;
+                    if (e.nasalOnly || !e.validPinyin) return 5;
+                    return singleChar ? 2 : 3;
+                }
+                return (e.initials.size() == qlen) ? 1 : 4;
+            };
+            const int ra = rankOf(a);
+            const int rb = rankOf(b);
+            if (ra != rb) return ra < rb;
 
             long long sa = scoreOf(a);
             long long sb = scoreOf(b);

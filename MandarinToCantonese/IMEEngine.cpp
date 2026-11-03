@@ -34,16 +34,17 @@ namespace
         // 切分拼音音节
         std::string remainder;
         auto syllables = PinyinSegmenter::Segment(g_composition, &remainder);
-        if (syllables.empty())
-        {
-            // 完全无法切分（例如输入了非法开头），不产生候选
-            return;
-        }
 
-        // 用已切分出的音节（忽略尾部不完整部分）去查词典
-        std::string key = PinyinSegmenter::Join(syllables);
+        // 查词键：
+        //  - 能切分时用已切分音节（忽略尾部不完整部分）；
+        //  - 整串切不出音节时（只输入了声母，如 n / zh），按字母前缀查词，
+        //    列出所有拼音以该声母开头的候选（如输入 n 时的「你」「那」「年」…）。
+        // 同时把原始组合串作为声母简拼查询：输入各字声母（如 nh）可列出「你好」等词。
+        std::string key = syllables.empty()
+            ? g_composition
+            : PinyinSegmenter::Join(syllables);
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
-        g_candidates = Dictionary::Instance().GetCandidates(key, mode);
+        g_candidates = Dictionary::Instance().GetCandidates(key, mode, g_composition);
 
         // 限制候选数量，避免过多
         const size_t kMaxCandidates = 20;
@@ -55,9 +56,34 @@ namespace
     bool CommitCandidate(int index)
     {
         if (index < 0 || index >= (int)g_candidates.size()) return false;
-        g_committed = g_candidates[index].word;
-        g_composition.clear();
+
+        const DictEntry& chosen = g_candidates[index];
+        g_committed = chosen.word;
+
+        if (chosen.viaInitials)
+        {
+            // 声母简拼匹配（如 nh → 你好）：整个组合串都是声母，全部消耗
+            g_composition.clear();
+        }
+        else
+        {
+            // 连续选词：只截掉候选拼音与组合串相同的公共前缀部分。
+            //  - 输入 doubao 时选「豆」(dou) → 余下 bao，刷新候选继续选词；
+            //  - 只输入声母 n 时选「你」(ni) → 公共前缀 n 被消耗，组合串清空。
+            size_t matchLen = 0;
+            while (matchLen < chosen.pinyin.size() &&
+                   matchLen < g_composition.size() &&
+                   chosen.pinyin[matchLen] == g_composition[matchLen])
+            {
+                ++matchLen;
+            }
+
+            g_composition.erase(0, matchLen);
+        }
+
         g_candidates.clear();
+        if (!g_composition.empty())
+            RefreshCandidates();
         return true;
     }
 
