@@ -39,14 +39,119 @@ namespace
         return !syllables.empty() && remainder.empty();
     }
 
-    // 由连续拼音生成各音节声母拼接（"nihao" -> "nh"）
-    std::string BuildInitials(const std::string& pinyin)
+    // 按空格 / 隔音符号拆分音节；词库没写分隔符时退回自动切分（"nihao" -> ni, hao）
+    std::vector<std::string> SplitSyllables(const std::string& raw, const std::string& key)
+    {
+        std::vector<std::string> out;
+        std::string cur;
+        cur.reserve(8);
+        for (char c : raw)
+        {
+            if (c == ' ' || c == '\'')
+            {
+                if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            }
+            else
+            {
+                cur.push_back((char)tolower((unsigned char)c));
+            }
+        }
+        if (!cur.empty()) out.push_back(cur);
+
+        if (out.size() <= 1)
+        {
+            std::string remainder;
+            const auto seg = PinyinSegmenter::Segment(key, &remainder);
+            if (!seg.empty() && remainder.empty()) out = seg;
+        }
+        return out;
+    }
+
+    // 把各音节长度编码成一串字节（拼音音节最长 6 字母），省去为每条词存音节字符串
+    std::string EncodeSyllableLengths(const std::vector<std::string>& syllables)
     {
         std::string out;
-        std::string remainder;
-        for (const auto& s : PinyinSegmenter::Segment(pinyin, &remainder))
-            out += InitialOfSyllable(s);
+        out.reserve(syllables.size());
+        for (const auto& s : syllables) out.push_back((char)s.size());
         return out;
+    }
+
+    // 由音节列表生成声母拼接（"ni","hao" -> "nh"）
+    std::string BuildInitials(const std::vector<std::string>& syllables)
+    {
+        std::string out;
+        for (const auto& s : syllables) out += InitialOfSyllable(s);
+        return out;
+    }
+
+    // 输入串已打到第几个音节：音节起始位置落在输入串内的都算已进入
+    //（如 豆瓣 dou|ban 输入 douba 时覆盖 2 个音节，输入 dou 时只覆盖 1 个）
+    size_t CoveredSyllableCount(const std::string& sylLens, size_t queryLen)
+    {
+        size_t covered = 0;
+        size_t off = 0;
+        for (size_t i = 0; i < sylLens.size(); ++i)
+        {
+            if (off >= queryLen) break;
+            ++covered;
+            off += (size_t)(unsigned char)sylLens[i];
+        }
+        return covered;
+    }
+
+    // 第 off 个字符起、长度为 len 的音节的声母长度（zh/ch/sh 为 2，其余为 1）
+    size_t InitialLenAt(const std::string& pinyin, size_t off, size_t len)
+    {
+        if (len >= 2)
+        {
+            const char c0 = pinyin[off];
+            const char c1 = pinyin[off + 1];
+            if ((c0 == 'z' || c0 == 'c' || c0 == 's') && c1 == 'h') return 2;
+        }
+        return 1;
+    }
+
+    // 混拼匹配结果：
+    //   None    —— 不匹配
+    //   Partial —— 已完整匹配部分音节，尾部仍在输入（如 ni + h -> 你好）
+    //   Full    —— 所有音节都匹配且输入串刚好用完（如 n + hao 或 ni + h -> 你好）
+    enum class MixedMatch { None, Partial, Full };
+
+    // 逐音节匹配组合串：每个音节既可以全拼匹配，也可以用声母匹配（混拼），
+    // 尾部允许只输入了音节的一部分。idx 为音节序号，off 为音节在 pinyin 中的偏移。
+    MixedMatch MatchMixedRec(const std::string& pinyin, const std::string& sylLens,
+                             size_t idx, size_t off,
+                             const std::string& query, size_t qpos)
+    {
+        if (qpos == query.size())
+        {
+            if (idx == sylLens.size()) return MixedMatch::Full;
+            return (idx > 0) ? MixedMatch::Partial : MixedMatch::None;
+        }
+        if (idx == sylLens.size()) return MixedMatch::None;
+
+        const size_t len = (size_t)(unsigned char)sylLens[idx];
+        const size_t initialLen = InitialLenAt(pinyin, off, len);
+
+        // 1) 该音节全拼（如 nihao 的 hao）
+        if (qpos + len <= query.size() && query.compare(qpos, len, pinyin, off, len) == 0)
+        {
+            const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + len);
+            if (r != MixedMatch::None) return r;
+        }
+        // 2) 该音节声母（如 nihao 的 n / h）
+        if (qpos + initialLen <= query.size() &&
+            query.compare(qpos, initialLen, pinyin, off, initialLen) == 0)
+        {
+            const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + initialLen);
+            if (r != MixedMatch::None) return r;
+        }
+        // 3) 该音节只输入了一部分（正在输入中，如 nha 里的 ha）
+        const size_t rest = query.size() - qpos;
+        if (idx > 0 && rest < len && pinyin.compare(off, rest, query, qpos, rest) == 0)
+            return MixedMatch::Partial;
+
+        return MixedMatch::None;
     }
 
     // 外置词库文件名（相对于 DLL 所在目录 / 安装目录）
@@ -195,11 +300,13 @@ bool Dictionary::LoadFromFile(const std::wstring& path, LangSource source, bool 
         std::wstring word = Utf8ToWide(word8);
         if (word.empty()) continue;
 
-        const std::string initials = BuildInitials(key);
+        const auto syllables = SplitSyllables(pinyin, key);
+        const std::string initials = BuildInitials(syllables);
+        const std::string sylLens = EncodeSyllableLengths(syllables);
         const bool nasalOnly = IsNasalOnlyPinyin(key);
         const bool validPinyin = IsValidPinyinSequence(key);
-        entries_.push_back({ std::move(word), std::move(key), std::move(initials), weight, source,
-                             nasalOnly, validPinyin });
+        entries_.push_back({ std::move(word), std::move(key), std::move(initials), std::move(sylLens),
+                             weight, source, nasalOnly, validPinyin });
         ++added;
     }
 
@@ -209,8 +316,9 @@ bool Dictionary::LoadFromFile(const std::wstring& path, LangSource source, bool 
 void Dictionary::AddEntry(const std::wstring& word, const std::string& pinyin,
                           int weight, LangSource source)
 {
-    entries_.push_back({ word, pinyin, BuildInitials(pinyin), weight, source,
-                         IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
+    const auto syllables = SplitSyllables(pinyin, pinyin);
+    entries_.push_back({ word, pinyin, BuildInitials(syllables), EncodeSyllableLengths(syllables),
+                         weight, source, IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
 }
 
 std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int mode,
@@ -225,7 +333,9 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     // 匹配规则：
     //  1) 拼音匹配：词条拼音以输入串开头（输入了词的前缀），
     //     或输入串以词条拼音开头（输入了更多，词是前缀的一部分）；
-    //  2) 声母匹配：输入串恰好是各音节声母拼接的前缀（如输入 nh 命中「你好」）。
+    //  2) 声母匹配：输入串恰好是各音节声母拼接的前缀（如输入 nh 命中「你好」）；
+    //  3) 混拼匹配：逐音节匹配，每个音节可以用全拼或声母
+    //     （如 nhao = n + hao、nih = ni + h，都能命中「你好」）。
     for (const auto& e : entries_)
     {
         const size_t elen = e.pinyin.size();
@@ -241,17 +351,72 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
             pinyinMatch = (pinyin.compare(0, elen, e.pinyin) == 0);
         }
 
+        // 鼻音自成音节词条（嗯/唔…）拼音很短（n/ng/m），输入串比它长时
+        // 只是靠「词条拼音正好是输入串前缀」混进来，属于噪声，直接跳过。
+        // 输入 n / ng 这类等长或更短的输入不受影响（它们仍排在所有 n 声母字之后）。
+        if (pinyinMatch && elen < plen && e.nasalOnly)
+            continue;
+
         bool initialsMatch = false;
         if (!pinyinMatch && qlen > 0 && e.initials.size() >= qlen)
         {
             initialsMatch = (e.initials.compare(0, qlen, initialsQuery) == 0);
         }
 
-        if (pinyinMatch || initialsMatch)
+        // 混拼：至少两个音节时才有意义（单音节用全拼 / 声母前缀已能覆盖），
+        // 首字母必须相同，避免对全词库做无意义的逐音节匹配。
+        bool mixedFull = false;
+        bool mixedPartial = false;
+        if (plen >= 2 && e.sylLens.size() >= 2 && e.pinyin[0] == pinyin[0])
         {
-            result.push_back(e);
-            result.back().viaInitials = initialsMatch;
+            const MixedMatch mm = MatchMixedRec(e.pinyin, e.sylLens, 0, 0, initialsQuery, 0);
+            mixedFull = (mm == MixedMatch::Full);
+            mixedPartial = (mm == MixedMatch::Partial);
         }
+
+        if (!pinyinMatch && !initialsMatch && !mixedFull && !mixedPartial)
+            continue;
+
+        // 匹配优先级（越小越靠前）：
+        //  0 拼音完全匹配 + 可完整切分      （如输入 ni → 你；nihao → 你好）
+        //  1 混拼 / 声母完整匹配，或已输入到第 2 个音节及以后的多字词
+        //                                    （如 nih、nhao、nh → 你好；douba → 豆瓣；wom → 我们）
+        //  2 拼音前缀匹配 + 可完整切分 + 单字（如输入 n → 你/那/年…；ni → 你）
+        //  3 拼音前缀匹配 + 可完整切分 + 多字词（如输入 n → 那个/你们…；dou → 豆瓣）
+        //  4 声母前缀匹配
+        //  5 拼音匹配但切分不完整 / 鼻音自成音节（如输入 n → 嗯「拼音 n/ng 不是真正声母」）
+        int rank = 0;
+        if (pinyinMatch)
+        {
+            if (elen == plen) rank = e.validPinyin ? 0 : 5;
+            else if (e.nasalOnly || !e.validPinyin) rank = 5;
+            else if (mixedFull) rank = 1;            // nih / nhao → 你好
+            else if (CoveredSyllableCount(e.sylLens, plen) >= 2) rank = 1; // douba → 豆瓣
+            else rank = (e.word.size() == 1) ? 2 : 3;
+        }
+        else if (initialsMatch || mixedFull)
+        {
+            rank = (initialsMatch && e.initials.size() != qlen) ? 4 : 1;
+        }
+        else
+        {
+            rank = 3;   // 混拼前缀（还在输入中，如 nha → 你好）
+        }
+
+        // 本次实际覆盖到的词条拼音字符数：
+        //  - pinyinMatch 时 = min(plen, elen)
+        //  - mixedFull    时 = plen   （输入串刚好覆盖所有音节，算完整）
+        //  - mixedPartial 时 = plen   （尾部仍在输入中，已覆盖全部已匹配音节）
+        //  - initialsMatch 时 = 0    （声母简拼不直接对应拼音字符长度，不用于"更长完整匹配"）
+        size_t matchedLen = 0;
+        if (mixedFull)         matchedLen = plen;
+        else if (pinyinMatch)  matchedLen = (std::min)(plen, elen);
+
+        result.push_back(e);
+        DictEntry& added = result.back();
+        added.viaInitials = (initialsMatch || mixedFull || mixedPartial);
+        added.matchRank = rank;
+        added.matchedLen = matchedLen;
     }
 
     // ===== 基于模式的优先级排序 =====
@@ -281,40 +446,26 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
-            // 匹配优先级（高→低）：
-            //  0 拼音完全匹配 + 可完整切分      （如输入 ni → 你；nihao → 你好）
-            //  1 声母完全匹配                   （如输入 nh → 你好）
-            //  2 拼音前缀匹配 + 可完整切分 + 单字（如输入 n → 你/那/年…）
-            //  3 拼音前缀匹配 + 可完整切分 + 多字词（如输入 n → 那个/你们…）
-            //  4 声母前缀匹配
-            //  5 拼音匹配但切分不完整 / 鼻音自成音节（如输入 n → 嗯「拼音 n/ng 不是真正声母」）
-            //
+            // 匹配优先级由 matchRank 给出（见上方匹配循环），这里只负责按它排序。
             // 关键：
             //  1) 输入单个字母时，先列该声母的单字，再列词组，最后才是「嗯」这类非真正声母；
             //  2) 嗯(pinyin=n) 这种残拼音完全匹配不会压过「你」(ni)；
             //  3) 嗯(ng)、呒(m) 这类鼻音自成音节排在所有 n/m 声母字之后；
             //  4) 多字词（你好=nihao）能完整切分，仍按完全匹配拿最高优先级；
-            //  5) 输入完整音节（如 ng、en）时仍按完全匹配优先。
-            auto rankOf = [&](const DictEntry& e) -> int
-            {
-                if (!e.viaInitials)
-                {
-                    const bool singleChar = (e.word.size() == 1);
-                    if (e.pinyin.size() == plen)
-                        return e.validPinyin ? 0 : 5;
-                    if (e.nasalOnly || !e.validPinyin) return 5;
-                    return singleChar ? 2 : 3;
-                }
-                return (e.initials.size() == qlen) ? 1 : 4;
-            };
-            const int ra = rankOf(a);
-            const int rb = rankOf(b);
-            if (ra != rb) return ra < rb;
+            //  5) 输入完整音节（如 ng、en）时仍按完全匹配优先；
+            //  6) 混拼完整匹配（nih / nhao / nh → 你好）排在单字前缀之前；
+            //  7) 已打到第 2 个音节及以后时，多字词排在单字之前（douba → 豆瓣，wom → 我们）。
+            if (a.matchRank != b.matchRank) return a.matchRank < b.matchRank;
+
+            // 同优先级下，"更长完整匹配"优先：
+            //  - 输入 nihaom 时「你好吗」matchedLen=5 > 「你好」matchedLen=4 → 你好吗排前
+            //  - 输入 nihao  时「你好吗」matchedLen=4 = 「你好」matchedLen=4 → 走后续词频比较
+            if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
 
             long long sa = scoreOf(a);
             long long sb = scoreOf(b);
             if (sa != sb) return sa > sb;
-            // 同分下，拼音更短（更精确匹配）的优先
+            // 同分同匹配长度下，拼音更短（更精确）的优先
             if (a.pinyin.size() != b.pinyin.size())
                 return a.pinyin.size() < b.pinyin.size();
             return a.weight > b.weight;

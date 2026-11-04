@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "IMEEngine.h"
-#include "PinyinSegmenter.h"
 #include "Dictionary.h"
 
 #include <string>
@@ -31,20 +30,12 @@ namespace
         g_candidates.clear();
         if (g_composition.empty()) return;
 
-        // 切分拼音音节
-        std::string remainder;
-        auto syllables = PinyinSegmenter::Segment(g_composition, &remainder);
-
-        // 查词键：
-        //  - 能切分时用已切分音节（忽略尾部不完整部分）；
-        //  - 整串切不出音节时（只输入了声母，如 n / zh），按字母前缀查词，
-        //    列出所有拼音以该声母开头的候选（如输入 n 时的「你」「那」「年」…）。
-        // 同时把原始组合串作为声母简拼查询：输入各字声母（如 nh）可列出「你好」等词。
-        std::string key = syllables.empty()
-            ? g_composition
-            : PinyinSegmenter::Join(syllables);
+        // 直接把完整的组合串交给词典：
+        //  - 整串都是拼音时按前缀 / 完全匹配（如 ni、nihao）；
+        //  - 只输入了声母时按声母匹配（如 nh）；
+        //  - 混拼时逐音节匹配（如 nih = ni + h、nhao = n + hao，都能列出「你好」）。
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
-        g_candidates = Dictionary::Instance().GetCandidates(key, mode, g_composition);
+        g_candidates = Dictionary::Instance().GetCandidates(g_composition, mode, g_composition);
 
         // 限制候选数量，避免过多
         const size_t kMaxCandidates = 20;
