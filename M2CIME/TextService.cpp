@@ -23,12 +23,17 @@ CTextService::CTextService()
     , _keyHandledInSession(false)
     , _pageIndex(0)
     , _hasCaretRect(false)
+    , _punctPending(false)
+    , _punctInComp(false)
+    , _punctLen(0)
 {
     DllAddRef();
     IME_Init();
     _LoadModeFromRegistry();
     IME_SetMode(_mode);
     SetRectEmpty(&_caretRect);
+    _punctCn[0] = 0;
+    _punctEn[0] = 0;
 }
 
 CTextService::~CTextService()
@@ -206,6 +211,7 @@ STDMETHODIMP CTextService::OnKillThreadFocus()
 {
     // 焦点离开：清空组合串并隐藏候选窗、状态条
     IME_ClearComposition();
+    _ClearPunctPending();
     _pageIndex = 0;
     if (_pCandidateWnd) _pCandidateWnd->_Hide();
     if (_pStatusBar) _pStatusBar->_Hide();
@@ -236,6 +242,7 @@ void CTextService::SetMode(ImeInputMode mode, bool fSaveToRegistry)
         _lastChineseMode = mode;
 
     IME_SetMode(mode);
+    _ClearPunctPending();
     _pageIndex = 0;
     if (_pCandidateWnd) _pCandidateWnd->_Hide();
 

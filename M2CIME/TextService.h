@@ -68,8 +68,15 @@ private:
     // 候选窗刷新（在 edit session 外调用）
     void _UpdateCandidateWindow(ITfContext* pContext, const RECT* pCaretRect);
 
-    // 全角标点映射：返回 0 表示无映射
-    static WCHAR _MapFullWidthPunct(WPARAM vk);
+    // 标点映射：返回 TRUE 时 *pCn 为中文标点、*pEn 为英文标点
+    static BOOL _MapPunct(WPARAM vk, WCHAR* pCn, WCHAR* pEn);
+
+    // 结束标点候选状态
+    void _ClearPunctPending();
+
+    // 在标点序列末尾追加 / 移除一个标点
+    void _AppendPunct(WCHAR cn, WCHAR en);
+    void _RemoveLastPunct();
 
     // 模式持久化
     void _LoadModeFromRegistry();
@@ -102,4 +109,10 @@ private:
 
     RECT            _caretRect;         // 最近一次 edit session 取到的光标矩形（屏幕坐标）
     bool            _hasCaretRect;
+
+    bool            _punctPending;      // 标点候选状态：等待用户选择中文/英文标点
+    bool            _punctInComp;       // 标点挂在拼音组合串末尾（选词后一起上屏）
+    WCHAR           _punctCn[16];       // 标点序列：中文形式（如连续两个点为 。。 ）
+    WCHAR           _punctEn[16];       // 标点序列：英文/原始形式（如 .. ）
+    int             _punctLen;          // 标点序列长度
 };
