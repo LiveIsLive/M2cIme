@@ -25,6 +25,7 @@ struct DictEntry
     bool         viaInitials = false; // 查询结果标记：是否靠声母简拼 / 混拼匹配（词库本身不使用）
     int          matchRank = 0;       // 查询结果标记：匹配优先级（越小越靠前，词库本身不使用）
     size_t       matchedLen = 0;      // 查询结果标记：本次实际覆盖到的词条拼音长度（用于更长完整匹配优先）
+    size_t       consumeInputLen = 0; // 查询结果标记：选中后消耗组合串的字符数（逐级回退候选专用，0 = 按默认规则消耗）
 };
 
 // 词典：从外置 SQLite 词库文件加载普通话 + 粤语词条，
@@ -49,6 +50,10 @@ public:
     //   "nhao"  -> 你好（n 声母 + hao 全拼）
     //   留空则不启用简拼 / 混拼匹配。
     // 返回按优先级排序后的候选列表。
+    //
+    // 逐级回退：整串匹配不到任何词组时（如输入 ryjx 想打「如意吉祥」但词库未收录），
+    // 依次列出 前 n-1 字母命中的词组、前 n-2 字母命中的词组 …… 最后是首字母声母对应的
+    // 单字（如 ryj 词组 → ry 词组 → r 单字），长前缀层已出现的词不会在短前缀层重复。
     std::vector<DictEntry> GetCandidates(const std::string& pinyin, int mode,
                                          const std::string& initialsQuery = std::string()) const;
 
@@ -58,6 +63,10 @@ public:
 
 private:
     Dictionary() = default;
+
+    // 对整串执行一次匹配 + 排序（不含逐级回退），供 GetCandidates 及其回退层调用。
+    std::vector<DictEntry> QueryOnce(const std::string& pinyin, int mode,
+                                     const std::string& initialsQuery) const;
 
     // 从 SQLite 词库文件读取词条（表 entries，字段均由导入工具预计算）。
     bool LoadFromDatabase(const std::wstring& path);

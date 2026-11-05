@@ -48,7 +48,15 @@ namespace
         const DictEntry& chosen = g_candidates[index];
         g_committed = chosen.word;
 
-        if (chosen.viaInitials)
+        if (chosen.consumeInputLen > 0)
+        {
+            // 逐级回退选中的候选（如输入 ryjx 选中「如意」ry）：
+            // 只消耗匹配上的那段输入，剩余字母（jx）留在组合串里继续组词
+            size_t n = chosen.consumeInputLen;
+            if (n > g_composition.size()) n = g_composition.size();
+            g_composition.erase(0, n);
+        }
+        else if (chosen.viaInitials)
         {
             // 声母简拼匹配（如 nh → 你好）：整个组合串都是声母，全部消耗
             g_composition.clear();

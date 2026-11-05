@@ -4,7 +4,9 @@
 #include "third_party/sqlite/sqlite3.h"
 
 #include <algorithm>
+#include <set>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -299,8 +301,8 @@ void Dictionary::AddEntry(const std::wstring& word, const std::string& pinyin,
                          weight, source, IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
 }
 
-std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int mode,
-                                                 const std::string& initialsQuery) const
+std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode,
+                                             const std::string& initialsQuery) const
 {
     std::vector<DictEntry> result;
     if (pinyin.empty()) return result;
@@ -448,6 +450,76 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
                 return a.pinyin.size() < b.pinyin.size();
             return a.weight > b.weight;
         });
+
+    // 纯声母输入（如 jx、ryjx，整串不是合法拼音）时，只保留字数不超过声母数量的词，
+    // 避免「教学活动」「集线器」这类更长的词挤进短声母候选列表。
+    if (qlen >= 2 && !IsValidPinyinSequence(initialsQuery))
+    {
+        result.erase(std::remove_if(result.begin(), result.end(),
+            [qlen](const DictEntry& e) { return e.word.size() > qlen; }),
+            result.end());
+    }
+
+    return result;
+}
+
+std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int mode,
+                                                 const std::string& initialsQuery) const
+{
+    std::vector<DictEntry> result = QueryOnce(pinyin, mode, initialsQuery);
+    if (initialsQuery.size() < 2) return result;
+
+    // 整串匹配不到任何词组时逐级回退（如输入 ryjx 想打「如意吉祥」但词库未收录）：
+    // 依次列出 ryj 命中的词组、ry 命中的词组，最后是 r 声母对应的单字，
+    // 让用户仍能逐段把整词选出来。
+    const bool hasWordGroup = std::any_of(result.begin(), result.end(),
+        [](const DictEntry& e) { return e.word.size() >= 2; });
+
+    if (hasWordGroup)
+    {
+        // 纯声母输入（如 jx）命中词组时，末尾补上首字母声母对应的单字（j 开头的字），
+        // 让用户既能选词也能选字。
+        const bool pureInitials = !IsValidPinyinSequence(initialsQuery);
+        if (pureInitials)
+        {
+            std::set<std::pair<std::wstring, int>> seen;
+            for (const auto& e : result)
+                seen.emplace(e.word, (int)e.source);
+            const std::string first = initialsQuery.substr(0, 1);
+            for (DictEntry& e : QueryOnce(first, mode, first))
+            {
+                if (e.word.size() != 1) continue;
+                if (!seen.emplace(e.word, (int)e.source).second) continue;
+                result.push_back(std::move(e));
+            }
+        }
+        return result;
+    }
+
+    result.clear();
+    std::set<std::pair<std::wstring, int>> seen;  // 长前缀层已列出的词不再在短前缀层重复
+
+    auto appendLayer = [&](size_t prefixLen, bool wordGroup)
+    {
+        const std::string prefix = initialsQuery.substr(0, prefixLen);
+        for (DictEntry& e : QueryOnce(prefix, mode, prefix))
+        {
+            // 词组层只留多字词，单字层只留单字
+            if ((e.word.size() >= 2) != wordGroup) continue;
+            if (!seen.emplace(e.word, (int)e.source).second) continue;
+            // 简拼 / 混拼命中的词组只消耗匹配上的那段输入（如 ryjx 选「如意」只消耗 ry，
+            // 剩余 jx 留在组合串里继续选「吉祥」）；拼音命中的沿用公共前缀消耗，无需标记。
+            if (e.viaInitials)
+                e.consumeInputLen = prefixLen;
+            result.push_back(std::move(e));
+        }
+    };
+
+    // 词组层：前 n-1 字母、前 n-2 字母……直到前 2 字母
+    for (size_t len = initialsQuery.size() - 1; len >= 2; --len)
+        appendLayer(len, true);
+    // 单字层：首字母声母对应的单字
+    appendLayer(1, false);
 
     return result;
 }
