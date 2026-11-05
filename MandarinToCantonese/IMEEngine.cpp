@@ -10,6 +10,7 @@ namespace
 {
     // ===== 全局引擎状态 =====
     ImeInputMode g_mode = IME_MODE_MANDARIN;
+    ImePunctMode g_punctMode = IME_PUNCT_HALFWIDTH;  // 默认半角标点
 
     std::string          g_composition;     // 当前拼音串（小写）
     std::vector<DictEntry> g_candidates;    // 当前候选词列表
@@ -109,20 +110,101 @@ ImeInputMode IME_GetMode()
     return g_mode;
 }
 
+void IME_SetPunctMode(ImePunctMode mode)
+{
+    g_punctMode = mode;
+}
+
+ImePunctMode IME_GetPunctMode()
+{
+    return g_punctMode;
+}
+
+// 半角→全角标点映射表（只覆盖常用标点，空格除外）
+static bool MapHalfToFullPunct(char half, wchar_t* pFull)
+{
+    struct PunctMap { char half; wchar_t full; };
+    static const PunctMap kMap[] = {
+        { ',', 0xFF0C },   // ，
+        { '.', 0x3002 },   // 。
+        { '!', 0xFF01 },   // ！
+        { '?', 0xFF1F },   // ？
+        { ';', 0xFF1B },   // ；
+        { ':', 0xFF1A },   // ：
+        { '`', 0xFF40 },   // ｀
+        { '\'', 0xFF07 },  // ＇
+        { '"', 0xFF02 },   // ＂
+        { '(', 0xFF08 },   // （
+        { ')', 0xFF09 },   // ）
+        { '[', 0x3010 },   // 【
+        { ']', 0x3011 },   // 】
+        { '{', 0xFF5B },   // ｛
+        { '}', 0xFF5D },   // ｝
+        { '<', 0x300A },   // 《
+        { '>', 0x300B },   // 》
+        { '/', 0xFF0F },   // ／
+        { '\\', 0xFF3C },  // ＼
+        { '-', 0xFF0D },   // －
+        { '_', 0xFF3F },   // ＿
+        { '=', 0xFF1D },   // ＝
+        { '+', 0xFF0B },   // ＋
+        { '*', 0xFF0A },   // ＊
+        { '&', 0xFF06 },   // ＆
+        { '%', 0xFF05 },   // ％
+        { '$', 0xFF04 },   // ＄
+        { '#', 0xFF03 },   // ＃
+        { '@', 0xFF20 },   // ＠
+        { '~', 0xFF5E },   // ～
+        { '^', 0xFF3E },   // ＾
+        { '|', 0xFF5C },   // ｜
+    };
+    for (const auto& m : kMap)
+    {
+        if (m.half == half)
+        {
+            *pFull = m.full;
+            return true;
+        }
+    }
+    return false;
+}
+
+wchar_t IME_ConvertPunctChar(char ch)
+{
+    wchar_t wc = (wchar_t)(unsigned char)ch;
+    if (g_punctMode == IME_PUNCT_FULLWIDTH)
+    {
+        wchar_t full = 0;
+        if (MapHalfToFullPunct(ch, &full))
+            wc = full;
+    }
+    return wc;
+}
+
 bool IME_OnChar(char ch)
 {
     EnsureInit();
 
-    // 英文模式：字母、数字、常见标点直接提交
+    // 英文模式：字母、数字、空格直接提交；标点根据全角/半角模式转换后提交
     if (g_mode == IME_MODE_ENGLISH)
     {
-        if (isalnum((unsigned char)ch) || ch == ' ' ||
-            ch == ',' || ch == '.' || ch == '!' || ch == '?' ||
-            ch == ';' || ch == ':' || ch == '\'' || ch == '"' ||
-            ch == '-' || ch == '_' || ch == '(' || ch == ')' ||
-            ch == '/' || ch == '\\')
+        if (isalnum((unsigned char)ch) || ch == ' ')
         {
             wchar_t wc = (wchar_t)(unsigned char)ch;
+            CommitRaw(std::wstring(1, wc));
+            return true;
+        }
+        // 标点符号：根据全角/半角模式转换
+        if (ch == ',' || ch == '.' || ch == '!' || ch == '?' ||
+            ch == ';' || ch == ':' || ch == '\'' || ch == '"' ||
+            ch == '-' || ch == '_' || ch == '(' || ch == ')' ||
+            ch == '/' || ch == '\\' || ch == '`' || ch == '[' ||
+            ch == ']' || ch == '{' || ch == '}' || ch == '<' ||
+            ch == '>' || ch == '=' || ch == '+' || ch == '*' ||
+            ch == '&' || ch == '%' || ch == '$' || ch == '#' ||
+            ch == '@' || ch == '~' || ch == '^' || ch == '|')
+        {
+            wchar_t wc = IME_ConvertPunctChar(ch);
             CommitRaw(std::wstring(1, wc));
             return true;
         }

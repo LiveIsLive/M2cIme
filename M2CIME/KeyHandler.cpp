@@ -121,9 +121,15 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
 
     if (IsCtrlAltDown()) return FALSE;   // 快捷键放行
 
-    // 英文模式：完全不拦截，系统原生输出
+    // 英文模式：拦截标点键以便根据全角/半角状态转换后输出
+    // 字母、数字、空格键、功能键仍然放行
     if (_mode == IME_MODE_ENGLISH)
+    {
+        WCHAR cn = 0, en = 0;
+        if (_MapPunct(wParam, &cn, &en))
+            return TRUE;  // 消费标点
         return FALSE;
+    }
 
     bool fHasComp = IME_HasComposition();
 
@@ -285,6 +291,23 @@ STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID /*rg
 
 void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WPARAM wParam)
 {
+    // 英文模式：直接根据全角/半角状态输出标点
+    if (_mode == IME_MODE_ENGLISH)
+    {
+        WCHAR cn = 0, en = 0;
+        if (_MapPunct(wParam, &cn, &en))
+        {
+            // 全角状态输出中文标点(cn)，半角状态输出英文标点(en)
+            WCHAR outCh = (_punctMode == IME_PUNCT_FULLWIDTH) ? cn : en;
+            if (outCh != 0)
+            {
+                _InsertTextAtSelection(ec, pContext, &outCh, 1);
+            }
+            _keyHandledInSession = true;
+            return;
+        }
+    }
+
     bool fHasComp = IME_HasComposition();
 
     // 组合串已消失：挂在末尾的标点一并作废
@@ -411,13 +434,20 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
         }
 
         // 空格 / 回车 / 数字：确认标点候选
+        // 候选顺序根据全角/半角状态动态排列：
+        //   全角状态：候选1=中文，候选2=英文
+        //   半角状态：候选1=英文，候选2=中文
         if (wParam == VK_SPACE || wParam == VK_RETURN ||
             (wParam >= '0' && wParam <= '9'))
         {
+            // 默认选择（空格/回车/数字1）：选排第一的（根据状态动态变化）
+            const WCHAR* first = (_punctMode == IME_PUNCT_FULLWIDTH) ? _punctCn : _punctEn;
+            const WCHAR* second = (_punctMode == IME_PUNCT_FULLWIDTH) ? _punctEn : _punctCn;
+
             if (wParam == VK_SPACE || wParam == VK_RETURN || wParam == '1')
-                _InsertTextAtSelection(ec, pContext, _punctCn, _punctLen);   // 默认第一个候选：中文标点
+                _InsertTextAtSelection(ec, pContext, first, _punctLen);
             else if (wParam == '2')
-                _InsertTextAtSelection(ec, pContext, _punctEn, _punctLen);
+                _InsertTextAtSelection(ec, pContext, second, _punctLen);
             else
             {
                 WCHAR d = (WCHAR)wParam;                                     // 无对应候选：直接输入数字
@@ -613,10 +643,19 @@ void CTextService::_UpdateCandidateWindow(ITfContext* /*pContext*/, const RECT* 
 
     if (_punctPending && !_punctInComp)
     {
-        // 标点候选（无拼音）：第 1 项中文标点（默认），第 2 项英文标点
+        // 标点候选（无拼音）：根据全角/半角状态排序
+        // 全角状态：中文标点排前；半角状态：英文标点排前
         comp = _punctEn;
-        items.emplace_back(_punctCn, 0);
-        items.emplace_back(_punctEn, 0);
+        if (_punctMode == IME_PUNCT_FULLWIDTH)
+        {
+            items.emplace_back(_punctCn, 0);  // 全角排前
+            items.emplace_back(_punctEn, 0);
+        }
+        else
+        {
+            items.emplace_back(_punctEn, 0);  // 半角排前
+            items.emplace_back(_punctCn, 0);
+        }
     }
     else
     {
@@ -688,8 +727,13 @@ void CTextService::OnCandidateClicked(int itemIndexOnPage)
     }
     else if (_punctPending)
     {
-        if (itemIndexOnPage == 0)      punctOut = _punctCn;
-        else if (itemIndexOnPage == 1) punctOut = _punctEn;
+        // 候选顺序根据全角/半角状态动态排列：
+        //   全角状态：0=中文，1=英文
+        //   半角状态：0=英文，1=中文
+        const WCHAR* first = (_punctMode == IME_PUNCT_FULLWIDTH) ? _punctCn : _punctEn;
+        const WCHAR* second = (_punctMode == IME_PUNCT_FULLWIDTH) ? _punctEn : _punctCn;
+        if (itemIndexOnPage == 0)      punctOut = first;
+        else if (itemIndexOnPage == 1) punctOut = second;
         else return;
         if (punctOut.empty()) return;
     }

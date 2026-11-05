@@ -89,7 +89,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <ModuleDefinitionFile>M2CIME.def</ModuleDefinitionFile>
-      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -112,7 +112,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <ModuleDefinitionFile>M2CIME.def</ModuleDefinitionFile>
-      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -131,7 +131,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <ModuleDefinitionFile>M2CIME.def</ModuleDefinitionFile>
-      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -154,7 +154,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <ModuleDefinitionFile>M2CIME.def</ModuleDefinitionFile>
-      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;oleaut32.lib;advapi32.lib;uuid.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -163,6 +163,7 @@
     <ClInclude Include="TextService.h" />
     <ClInclude Include="CandidateWindow.h" />
     <ClInclude Include="LangBarButton.h" />
+    <ClInclude Include="LangBarPunctButton.h" />
     <ClInclude Include="StatusBar.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
@@ -175,6 +176,7 @@
     <ClCompile Include="KeyHandler.cpp" />
     <ClCompile Include="CandidateWindow.cpp" />
     <ClCompile Include="LangBarButton.cpp" />
+    <ClCompile Include="LangBarPunctButton.cpp" />
     <ClCompile Include="StatusBar.cpp" />
     <ClCompile Include="..\MandarinToCantonese\IMEEngine.cpp" />
     <ClCompile Include="..\MandarinToCantonese\Dictionary.cpp" />

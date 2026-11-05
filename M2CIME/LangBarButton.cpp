@@ -76,7 +76,18 @@ STDMETHODIMP CLangBarButton::Show(BOOL /*fShow*/) { return S_OK; }
 STDMETHODIMP CLangBarButton::GetTooltipString(BSTR* pbstrToolTip)
 {
     if (!pbstrToolTip) return E_INVALIDARG;
-    *pbstrToolTip = SysAllocString(M2C_LANGBAR_TIP);
+
+    const WCHAR* tip = M2C_TIP_MANDARIN;
+    if (_pService)
+    {
+        switch (_pService->GetMode())
+        {
+        case IME_MODE_ENGLISH:   tip = M2C_TIP_ENGLISH;   break;
+        case IME_MODE_CANTONESE: tip = M2C_TIP_CANTONESE; break;
+        }
+    }
+
+    *pbstrToolTip = SysAllocString(tip);
     return (*pbstrToolTip) ? S_OK : E_OUTOFMEMORY;
 }
 

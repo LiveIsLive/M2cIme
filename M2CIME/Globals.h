@@ -26,10 +26,21 @@ DEFINE_GUID(GUID_M2CProfile,
 DEFINE_GUID(GUID_M2CLangBarButton,
     0xb6e8d2a4, 0x1f3c, 0x4b5a, 0x9e, 0x7d, 0x8c, 0x2a, 0x4f, 0x6b, 0x1d, 0x35);
 
+// 语言栏全角/半角标点切换按钮 GUID
+// {C7F9E3B5-2F4D-5C6B-0E8D-9D3B5A7C2E46}
+DEFINE_GUID(GUID_M2CLangBarPunctButton,
+    0xc7f9e3b5, 0x2f4d, 0x5c6b, 0x0e, 0x8d, 0x9d, 0x3b, 0x5a, 0x7c, 0x2e, 0x46);
+
 // 显示名称
-#define M2C_SERVICE_DESC   L"M2C 拼音（普通话/粤语）"
-#define M2C_LANGBAR_DESC   L"M2C 模式切换"
-#define M2C_LANGBAR_TIP    L"点击切换：英文 / 普通话 / 粤语"
+#define M2C_SERVICE_DESC       L"M2C 拼音（普通话/粤语）"
+#define M2C_LANGBAR_DESC       L"M2C 模式切换"
+#define M2C_PUNCT_BTN_DESC     L"M2C 全角/半角切换"
+// 悬停提示文字（显示当前状态）
+#define M2C_TIP_ENGLISH        L"英文"
+#define M2C_TIP_MANDARIN       L"普通话"
+#define M2C_TIP_CANTONESE      L"粤语"
+#define M2C_TIP_FULLWIDTH      L"全角"
+#define M2C_TIP_HALFWIDTH      L"半角"
 
 // 每页候选数（数字键 1-9 选词）
 #define M2C_PAGE_SIZE 9

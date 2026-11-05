@@ -12,6 +12,13 @@ typedef enum ImeInputMode
     IME_MODE_CANTONESE = 2,  // 粤语：粤语词库强制排到最高
 } ImeInputMode;
 
+// 标点符号模式（全角/半角）
+typedef enum ImePunctMode
+{
+    IME_PUNCT_HALFWIDTH = 0,  // 半角（英文标点）
+    IME_PUNCT_FULLWIDTH = 1,  // 全角（中文标点）
+} ImePunctMode;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +30,14 @@ __declspec(dllexport) void IME_Init();
 // 切换 / 查询输入模式
 __declspec(dllexport) void IME_SetMode(ImeInputMode mode);
 __declspec(dllexport) ImeInputMode IME_GetMode();
+
+// 切换 / 查询标点符号模式（全角/半角）
+__declspec(dllexport) void IME_SetPunctMode(ImePunctMode mode);
+__declspec(dllexport) ImePunctMode IME_GetPunctMode();
+
+// 在英文模式下，根据当前标点模式转换一个半角标点为全角/半角
+// 返回转换后的宽字符（若无需转换则原样返回）
+__declspec(dllexport) wchar_t IME_ConvertPunctChar(char ch);
 
 // 处理一个按键字符（a-z / A-Z / 空格 / 数字 / 标点 / 回车）。
 // 返回 true 表示该键已被引擎消费（前端不应再默认处理），

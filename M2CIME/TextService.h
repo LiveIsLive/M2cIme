@@ -7,6 +7,7 @@
 
 class CCandidateWindow;
 class CLangBarButton;
+class CLangBarPunctButton;
 class CStatusBar;
 
 class CTextService :
@@ -51,6 +52,11 @@ public:
     ImeInputMode GetMode() const { return _mode; }
     ITfThreadMgr* GetThreadMgr() const { return _pThreadMgr; }
 
+    // 全角/半角标点切换
+    void  SetPunctMode(ImePunctMode mode, bool fSaveToRegistry = true);
+    ImePunctMode GetPunctMode() const { return _punctMode; }
+    void  TogglePunctMode();
+
     // 候选窗鼠标点击选词回调
     void OnCandidateClicked(int itemIndexOnPage);
 
@@ -80,9 +86,11 @@ private:
 
     // 模式持久化
     void _LoadModeFromRegistry();
+    void _LoadPunctModeFromRegistry();
 
     // 语言栏按钮文字刷新
     void _UpdateLangBarButton();
+    void _UpdateLangBarPunctButton();
 
     // 当前线程的活动输入法是否为本输入法
     BOOL _IsM2CProfileActive();
@@ -99,10 +107,12 @@ private:
 
     CCandidateWindow* _pCandidateWnd;
     CLangBarButton*   _pLangBarButton;
+    CLangBarPunctButton* _pLangBarPunctButton;  // 全角/半角标点切换按钮
     CStatusBar*       _pStatusBar;
 
     ImeInputMode    _mode;              // 当前模式
     ImeInputMode    _lastChineseMode;   // 最近的中文模式（普通话/粤语），Shift 切回时用
+    ImePunctMode    _punctMode;         // 当前标点模式（全角/半角）
     bool            _shiftPressed;      // Shift 按下后尚未消费其它键
     bool            _keyHandledInSession; // edit session 中是否消费了按键
     int             _pageIndex;         // 候选翻页页号
