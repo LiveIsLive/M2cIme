@@ -36,12 +36,8 @@ namespace
         //  - 只输入了声母时按声母匹配（如 nh）；
         //  - 混拼时逐音节匹配（如 nih = ni + h、nhao = n + hao，都能列出「你好」）。
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
+        // 不限制候选数量，全部放入候选列表，由前端翻页展示
         g_candidates = Dictionary::Instance().GetCandidates(g_composition, mode, g_composition);
-
-        // 限制候选数量，避免过多
-        const size_t kMaxCandidates = 20;
-        if (g_candidates.size() > kMaxCandidates)
-            g_candidates.resize(kMaxCandidates);
     }
 
     // 提交一个候选词
