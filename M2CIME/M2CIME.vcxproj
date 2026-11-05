@@ -179,6 +179,10 @@
     <ClCompile Include="..\MandarinToCantonese\IMEEngine.cpp" />
     <ClCompile Include="..\MandarinToCantonese\Dictionary.cpp" />
     <ClCompile Include="..\MandarinToCantonese\PinyinSegmenter.cpp" />
+    <ClCompile Include="..\MandarinToCantonese\third_party\sqlite\sqlite3.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>SQLITE_OMIT_LOAD_EXTENSION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="M2CIME.rc" />
@@ -193,7 +197,7 @@
   <!-- 外置词库（解决方案目录 dicts\）构建后复制到输出目录，保持与安装目录一致的结构 -->
   <Target Name="CopyDicts" AfterTargets="Build" Condition="Exists('$(ProjectDir)..\dicts')">
     <ItemGroup>
-      <_DictFiles Include="$(ProjectDir)..\dicts\*.yaml" />
+      <_DictFiles Include="$(ProjectDir)..\dicts\*.db" />
     </ItemGroup>
     <Copy SourceFiles="@(_DictFiles)" DestinationFolder="$(OutDir)dicts" SkipUnchangedFiles="true" />
   </Target>

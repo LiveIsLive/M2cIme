@@ -26,9 +26,8 @@ UninstallDisplayIcon={app}\M2CIME.dll
 Source: "M2CIME\x64\Release\M2CIME.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 Source: "M2CIME\Release\M2CIME32.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 Source: "M2CIME\M2CIME.ico"; DestDir: "{app}"; Flags: ignoreversion
-; 外置词库（RIME 格式，可用文本编辑器自行修改后重新部署生效）
-Source: "dicts\pinyin_simp.dict.yaml"; DestDir: "{app}\dicts"; Flags: ignoreversion
-Source: "dicts\joy.pinyin_yueyu.dict.yaml"; DestDir: "{app}\dicts"; Flags: ignoreversion
+; 外置词库（SQLite 数据库，可用 sqlite3 工具维护，改完重新部署生效）
+Source: "dicts\m2c_dict.db"; DestDir: "{app}\dicts"; Flags: ignoreversion
 
 [Run]
 Filename: "{sys}\taskkill.exe"; Parameters: "/f /im ctfmon.exe"; Flags: runhidden waituntilterminated skipifdoesntexist; StatusMsg: "正在关闭语言栏进程..."

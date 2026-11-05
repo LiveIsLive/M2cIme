@@ -144,12 +144,17 @@
     <ClInclude Include="PinyinSegmenter.h" />
     <ClInclude Include="Dictionary.h" />
     <ClInclude Include="IMEEngine.h" />
+    <ClInclude Include="third_party\sqlite\sqlite3.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="PinyinSegmenter.cpp" />
     <ClCompile Include="Dictionary.cpp" />
     <ClCompile Include="IMEEngine.cpp" />
+    <ClCompile Include="third_party\sqlite\sqlite3.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>SQLITE_OMIT_LOAD_EXTENSION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
@@ -163,7 +168,7 @@
   <!-- 外置词库（解决方案目录 dicts\）构建后复制到输出目录，保持与安装目录一致的结构 -->
   <Target Name="CopyDicts" AfterTargets="Build" Condition="Exists('$(ProjectDir)..\dicts')">
     <ItemGroup>
-      <_DictFiles Include="$(ProjectDir)..\dicts\*.yaml" />
+      <_DictFiles Include="$(ProjectDir)..\dicts\*.db" />
     </ItemGroup>
     <Copy SourceFiles="@(_DictFiles)" DestinationFolder="$(OutDir)dicts" SkipUnchangedFiles="true" />
   </Target>

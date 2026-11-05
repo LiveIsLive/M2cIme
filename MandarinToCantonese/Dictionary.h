@@ -27,12 +27,11 @@ struct DictEntry
     size_t       matchedLen = 0;      // 查询结果标记：本次实际覆盖到的词条拼音长度（用于更长完整匹配优先）
 };
 
-// 词典：从外置 RIME 格式词库文件（.dict.yaml）加载普通话 + 粤语词条，
+// 词典：从外置 SQLite 词库文件加载普通话 + 粤语词条，
 // 并根据当前输入模式做候选词优先级排序。
 //
 // 词库文件位于 DLL 所在目录（安装目录）下的 dicts 子目录：
-//   dicts\pinyin_simp.dict.yaml        —— 普通话词库（带词频权重）
-//   dicts\joy.pinyin_yueyu.dict.yaml   —— 粤语词库（无权重，按文件顺序）
+//   dicts\m2c_dict.db   —— 普通话 + 粤语词条（拼音、声母、音节长度等已预计算）
 // 若 dicts 子目录不存在，则回退查找 DLL 所在目录本身。
 class Dictionary
 {
@@ -60,9 +59,8 @@ public:
 private:
     Dictionary() = default;
 
-    // 从 RIME .dict.yaml 文件加载词条。
-    // hasWeight: true 表示每行第 3 列为词频；false 表示按行序生成递减权重。
-    bool LoadFromFile(const std::wstring& path, LangSource source, bool hasWeight);
+    // 从 SQLite 词库文件读取词条（表 entries，字段均由导入工具预计算）。
+    bool LoadFromDatabase(const std::wstring& path);
 
     void LoadExternal();
 

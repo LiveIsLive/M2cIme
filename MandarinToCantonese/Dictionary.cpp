@@ -1,9 +1,9 @@
 #include "pch.h"
 #include "Dictionary.h"
 #include "PinyinSegmenter.h"
+#include "third_party/sqlite/sqlite3.h"
 
 #include <algorithm>
-#include <fstream>
 #include <string>
 
 namespace
@@ -155,9 +155,8 @@ namespace
     }
 
     // 外置词库文件名（相对于 DLL 所在目录 / 安装目录）
-    const wchar_t* kDictSubdir      = L"dicts";
-    const wchar_t* kMandarinDictFile = L"pinyin_simp.dict.yaml";
-    const wchar_t* kCantoneseDictFile = L"joy.pinyin_yueyu.dict.yaml";
+    const wchar_t* kDictSubdir = L"dicts";
+    const wchar_t* kDictFile   = L"m2c_dict.db";
 
     // 获取当前 DLL 所在目录（词库相对安装目录定位）
     std::wstring GetModuleDir()
@@ -193,6 +192,17 @@ namespace
         MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), &w[0], n);
         return w;
     }
+
+    // UTF-16 -> UTF-8（SQLite 需要 UTF-8 路径）
+    std::string WideToUtf8(const std::wstring& w)
+    {
+        if (w.empty()) return std::string();
+        int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+        if (n <= 0) return std::string();
+        std::string s((size_t)n, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
+        return s;
+    }
 }
 
 Dictionary& Dictionary::Instance()
@@ -214,102 +224,70 @@ void Dictionary::LoadExternal()
     const std::wstring dir = GetModuleDir();
     if (dir.empty()) return;
 
-    // 优先查找 <DLL目录>\dicts\ 子目录，其次查找 <DLL目录> 本身
-    const std::wstring sub = dir + L"\\" + kDictSubdir + L"\\";
-    const std::wstring flat = dir + L"\\";
-
-    struct
+    // 优先查找 <DLL目录>\dicts\m2c_dict.db，其次查找 <DLL目录> 本身
+    std::wstring path = dir + L"\\" + kDictSubdir + L"\\" + kDictFile;
+    if (!FileExists(path))
     {
-        const wchar_t* file;
-        LangSource     source;
-        bool           hasWeight;
-    } specs[] =
-    {
-        { kMandarinDictFile,  LangSource::Mandarin,  true  },
-        { kCantoneseDictFile, LangSource::Cantonese, false },
-    };
-
-    entries_.reserve(70000);
-
-    for (const auto& s : specs)
-    {
-        std::wstring path = sub + s.file;
-        if (!FileExists(path))
-        {
-            path = flat + s.file;
-            if (!FileExists(path)) continue;
-        }
-        LoadFromFile(path, s.source, s.hasWeight);
+        path = dir + L"\\" + kDictFile;
+        if (!FileExists(path)) return;
     }
+    LoadFromDatabase(path);
 }
 
-bool Dictionary::LoadFromFile(const std::wstring& path, LangSource source, bool hasWeight)
+bool Dictionary::LoadFromDatabase(const std::wstring& path)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-
-    size_t added = 0;
-    bool headerDone = false;   // RIME 词库头部在 "..." 行结束
-    std::string line;
-    line.reserve(256);
-
-    while (std::getline(in, line))
+    sqlite3* db = nullptr;
+    const std::string dbPath = WideToUtf8(path);
+    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
     {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-
-        if (!headerDone)
-        {
-            // 跳过 YAML 头部（--- 到 ... 之间）
-            if (line == "...") headerDone = true;
-            continue;
-        }
-
-        if (line.empty() || line[0] == '#') continue;
-
-        // 格式：汉字 \t 拼音(可含空格分隔音节) [\t 权重]
-        const size_t t1 = line.find('\t');
-        if (t1 == std::string::npos) continue;
-        const size_t t2 = line.find('\t', t1 + 1);
-
-        const std::string word8 = line.substr(0, t1);
-        std::string pinyin = (t2 == std::string::npos)
-            ? line.substr(t1 + 1)
-            : line.substr(t1 + 1, t2 - t1 - 1);
-
-        int weight;
-        if (hasWeight && t2 != std::string::npos)
-        {
-            weight = atoi(line.c_str() + t2 + 1);
-        }
-        else
-        {
-            // 无权重列（sort: original）：按文件行序生成递减权重，保持原词频排序
-            weight = 1000000 - (int)added;
-        }
-
-        // 去掉音节间空格并转小写，得到连续拼音（如 "ni hao" -> "nihao"）
-        std::string key;
-        key.reserve(pinyin.size());
-        for (char c : pinyin)
-        {
-            if (c == ' ' || c == '\'') continue;
-            key.push_back((char)tolower((unsigned char)c));
-        }
-        if (word8.empty() || key.empty()) continue;
-
-        std::wstring word = Utf8ToWide(word8);
-        if (word.empty()) continue;
-
-        const auto syllables = SplitSyllables(pinyin, key);
-        const std::string initials = BuildInitials(syllables);
-        const std::string sylLens = EncodeSyllableLengths(syllables);
-        const bool nasalOnly = IsNasalOnlyPinyin(key);
-        const bool validPinyin = IsValidPinyinSequence(key);
-        entries_.push_back({ std::move(word), std::move(key), std::move(initials), std::move(sylLens),
-                             weight, source, nasalOnly, validPinyin });
-        ++added;
+        if (db) sqlite3_close(db);
+        return false;
     }
 
+    // id 即导入顺序（普通话在前、粤语在后），
+    // 按它读入可保持与原文本词库一致的同权重排序。
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
+        " FROM entries ORDER BY id";
+
+    size_t added = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        entries_.reserve(70000);
+
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            const unsigned char* word8 = sqlite3_column_text(stmt, 0);
+            const unsigned char* pinyin8 = sqlite3_column_text(stmt, 1);
+            const unsigned char* initials8 = sqlite3_column_text(stmt, 2);
+            if (!word8 || !pinyin8 || !initials8) continue;
+
+            std::wstring word = Utf8ToWide(reinterpret_cast<const char*>(word8));
+            if (word.empty()) continue;
+
+            const void* blob = sqlite3_column_blob(stmt, 3);
+            const int blobLen = sqlite3_column_bytes(stmt, 3);
+            std::string sylLens;
+            if (blob && blobLen > 0)
+                sylLens.assign(static_cast<const char*>(blob), (size_t)blobLen);
+
+            entries_.push_back({
+                std::move(word),
+                reinterpret_cast<const char*>(pinyin8),
+                reinterpret_cast<const char*>(initials8),
+                std::move(sylLens),
+                sqlite3_column_int(stmt, 4),
+                (sqlite3_column_int(stmt, 5) == 1) ? LangSource::Cantonese : LangSource::Mandarin,
+                sqlite3_column_int(stmt, 6) != 0,
+                sqlite3_column_int(stmt, 7) != 0
+            });
+            ++added;
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    sqlite3_close(db);
     return added > 0;
 }
 
