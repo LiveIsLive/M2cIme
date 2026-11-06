@@ -49,6 +49,9 @@ __declspec(dllexport) bool IME_OnChar(char ch);
 // 处理退格键。组合串非空时删除最后一个拼音字符并返回 true。
 __declspec(dllexport) bool IME_OnBackspace();
 
+// 删除组合串开头的 n 个字符（用于"从头选词"：标点被替换上屏后从组合串里移除）
+__declspec(dllexport) bool IME_DeleteCompositionFront(int n);
+
 // 获取当前组合串（正在输入的拼音）。
 // buf 为 wchar_t 缓冲区，bufLen 为容量（含结尾 '\0'）。
 // 返回写入的字符数（不含 '\0'）。

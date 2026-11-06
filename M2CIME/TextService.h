@@ -5,6 +5,8 @@
 
 #include "Globals.h"
 
+enum PunctSide { PSIDE_NONE = 0, PSIDE_BEFORE = 1, PSIDE_AFTER = 2 };
+
 class CCandidateWindow;
 class CLangBarButton;
 class CLangBarPunctButton;
@@ -80,9 +82,13 @@ private:
     // 结束标点候选状态
     void _ClearPunctPending();
 
-    // 在标点序列末尾追加 / 移除一个标点
-    void _AppendPunct(WCHAR cn, WCHAR en);
+    // 前标点 / 后标点序列追加 / 移除
+    void _AppendPunctBefore(WCHAR cn, WCHAR en);
+    void _AppendPunctAfter(WCHAR cn, WCHAR en);
     void _RemoveLastPunct();
+
+    // 在混合态决定展示哪个标点的候选（优先前标点）
+    void _GetMixedPunctSource(WCHAR* pCn, WCHAR* pEn, PunctSide* pSide) const;
 
     // 模式持久化
     void _LoadModeFromRegistry();
@@ -120,9 +126,15 @@ private:
     RECT            _caretRect;         // 最近一次 edit session 取到的光标矩形（屏幕坐标）
     bool            _hasCaretRect;
 
-    bool            _punctPending;      // 标点候选状态：等待用户选择中文/英文标点
-    bool            _punctInComp;       // 标点挂在拼音组合串末尾（选词后一起上屏）
-    WCHAR           _punctCn[16];       // 标点序列：中文形式（如连续两个点为 。。 ）
-    WCHAR           _punctEn[16];       // 标点序列：英文/原始形式（如 .. ）
-    int             _punctLen;          // 标点序列长度
+    bool            _punctPending;      // 标点状态激活（候选中或挂在组合串上）
+    bool            _punctInComp;       // 标点已挂到组合串上（选词后一起上屏）
+    WCHAR           _punctBeforeCn[16]; // 拼音前标点：中文形式（如引号前半）
+    WCHAR           _punctBeforeEn[16]; // 拼音前标点：英文/原始形式
+    int             _punctBeforeLen;    // 前标点序列长度
+    WCHAR           _punctAfterCn[16];  // 拼音后标点：中文形式（如引号后半）
+    WCHAR           _punctAfterEn[16];  // 拼音后标点：英文/原始形式
+    int             _punctAfterLen;     // 后标点序列长度
+    int             _punctAfterPos;     // 后标点在组合串中的插入位置（输入标点时的组合串长度）
+
+    int             _mixedPunctCandCount; // 混合态候选列表里前几个"标点自身候选"的数量
 };

@@ -29,7 +29,10 @@ CTextService::CTextService()
     , _hasCaretRect(false)
     , _punctPending(false)
     , _punctInComp(false)
-    , _punctLen(0)
+    , _punctBeforeLen(0)
+    , _punctAfterLen(0)
+    , _punctAfterPos(0)
+    , _mixedPunctCandCount(0)
 {
     DllAddRef();
     IME_Init();
@@ -38,8 +41,10 @@ CTextService::CTextService()
     IME_SetMode(_mode);
     IME_SetPunctMode(_punctMode);
     SetRectEmpty(&_caretRect);
-    _punctCn[0] = 0;
-    _punctEn[0] = 0;
+    _punctBeforeCn[0] = 0;
+    _punctBeforeEn[0] = 0;
+    _punctAfterCn[0] = 0;
+    _punctAfterEn[0] = 0;
 }
 
 CTextService::~CTextService()

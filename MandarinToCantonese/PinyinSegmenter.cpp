@@ -79,6 +79,14 @@ std::vector<std::string> PinyinSegmenter::Segment(const std::string& input, std:
     const size_t n = input.size();
     while (i < n)
     {
+        // 跳过标点、数字等非字母字符——这些在组合串里只是展示用，
+        // 不参与拼音切分（例如 "nin" → 跳过 "，再切 nin）
+        if (!isalpha((unsigned char)input[i]))
+        {
+            ++i;
+            continue;
+        }
+
         // 正向最大匹配：从最长 6 个字符（拼音最长音节长度）尝试
         size_t bestLen = 0;
         for (size_t len = 6; len >= 1; --len)
@@ -93,8 +101,47 @@ std::vector<std::string> PinyinSegmenter::Segment(const std::string& input, std:
         }
         if (bestLen == 0)
         {
-            // 剩余部分无法构成合法音节
-            if (pRemainder) *pRemainder = input.substr(i);
+            // 剩余字母部分无法构成合法音节，收集到 remainder
+            std::string remain;
+            size_t j = i;
+            while (j < n)
+            {
+                if (!isalpha((unsigned char)input[j]))
+                {
+                    ++j;
+                    continue;
+                }
+                size_t l2 = 0;
+                for (size_t len2 = 6; len2 >= 1; --len2)
+                {
+                    if (j + len2 > n) continue;
+                    std::string t = input.substr(j, len2);
+                    if (set.find(t) != set.end()) { l2 = len2; break; }
+                }
+                if (l2 == 0)
+                {
+                    remain.push_back(input[j]);
+                    ++j;
+                }
+                else
+                {
+                    // 找到合法音节了，前面积累的 remainder 其实都应该归 remainder
+                    // 但为了简单，这里用一个更直接的做法：剩余所有无法完整切分的都进 remainder
+                    std::string allRemain;
+                    for (size_t k = i; k < n; ++k)
+                        if (isalpha((unsigned char)input[k]))
+                            allRemain.push_back(input[k]);
+                    if (pRemainder) *pRemainder = allRemain;
+                    return result;
+                }
+            }
+            // 全是标点？不算 remainder
+            if (remain.empty())
+            {
+                if (pRemainder) pRemainder->clear();
+                return result;
+            }
+            if (pRemainder) *pRemainder = remain;
             return result;
         }
         result.push_back(input.substr(i, bestLen));

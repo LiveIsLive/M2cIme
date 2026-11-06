@@ -31,13 +31,32 @@ namespace
         g_candidates.clear();
         if (g_composition.empty()) return;
 
-        // 直接把完整的组合串交给词典：
-        //  - 整串都是拼音时按前缀 / 完全匹配（如 ni、nihao）；
-        //  - 只输入了声母时按声母匹配（如 nh）；
-        //  - 混拼时逐音节匹配（如 nih = ni + h、nhao = n + hao，都能列出「你好」）。
+        // 组合串里可能混有标点（如 "nin"shizuncheng），词典只认拼音，
+        // 所以先用过滤掉标点/数字的纯拼音串来查候选
+        std::string purePinyin;
+        purePinyin.reserve(g_composition.size());
+        for (char c : g_composition)
+            if (isalpha((unsigned char)c))
+                purePinyin.push_back((char)tolower((unsigned char)c));
+        if (purePinyin.empty()) return;  // 全是标点，不生成候选
+
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
-        // 不限制候选数量，全部放入候选列表，由前端翻页展示
-        g_candidates = Dictionary::Instance().GetCandidates(g_composition, mode, g_composition);
+        g_candidates = Dictionary::Instance().GetCandidates(purePinyin, mode, purePinyin);
+    }
+
+    // 从组合串里消耗 nLetters 个字母字符（跳过标点、数字等）
+    // 例如组合串="nin"hao，消耗 3 个字母 → erase("nin")，剩余 = "hao
+    void ConsumeLetters(std::string& s, size_t nLetters)
+    {
+        size_t consumed = 0;
+        size_t lettersSeen = 0;
+        for (size_t i = 0; i < s.size() && lettersSeen < nLetters; ++i)
+        {
+            ++consumed;
+            if (isalpha((unsigned char)s[i]))
+                ++lettersSeen;
+        }
+        s.erase(0, consumed);
     }
 
     // 提交一个候选词
@@ -51,30 +70,34 @@ namespace
         if (chosen.consumeInputLen > 0)
         {
             // 逐级回退选中的候选（如输入 ryjx 选中「如意」ry）：
-            // 只消耗匹配上的那段输入，剩余字母（jx）留在组合串里继续组词
+            // 消耗指定数量的纯拼音字母，自动跳过标点
             size_t n = chosen.consumeInputLen;
             if (n > g_composition.size()) n = g_composition.size();
-            g_composition.erase(0, n);
+            ConsumeLetters(g_composition, n);
         }
         else if (chosen.viaInitials)
         {
-            // 声母简拼匹配（如 nh → 你好）：整个组合串都是声母，全部消耗
+            // 声母简拼匹配（如 nh → 你好）：整个组合串都消耗（含标点，全部清空）
             g_composition.clear();
         }
         else
         {
-            // 连续选词：只截掉候选拼音与组合串相同的公共前缀部分。
-            //  - 输入 doubao 时选「豆」(dou) → 余下 bao，刷新候选继续选词；
-            //  - 只输入声母 n 时选「你」(ni) → 公共前缀 n 被消耗，组合串清空。
+            // 连续选词：截掉候选拼音与组合串的纯公共前缀字母数
+            //  - 输入 "dou" 时选「豆」(dou) → 余下 bo，刷新候选继续选词；
+            //  - 只输入声母 n 时选「你」(ni) → 公共前缀 n 被消耗。
+            // 注意：组合串里可能混有标点，所以先算纯拼音公共前缀，
+            // 再用 ConsumeLetters 跳回原始串消耗（把标点也一并消耗掉）。
             size_t matchLen = 0;
-            while (matchLen < chosen.pinyin.size() &&
-                   matchLen < g_composition.size() &&
-                   chosen.pinyin[matchLen] == g_composition[matchLen])
+            size_t j = 0;  // g_composition 里的字母位置
+            while (matchLen < chosen.pinyin.size() && j < g_composition.size())
             {
+                if (!isalpha((unsigned char)g_composition[j])) { ++j; continue; }
+                if (chosen.pinyin[matchLen] != (char)tolower((unsigned char)g_composition[j]))
+                    break;
                 ++matchLen;
+                ++j;
             }
-
-            g_composition.erase(0, matchLen);
+            ConsumeLetters(g_composition, matchLen);
         }
 
         g_candidates.clear();
@@ -216,10 +239,20 @@ bool IME_OnChar(char ch)
     }
 
     // 普通话 / 粤语模式
-    if (isalpha((unsigned char)ch))
+    const unsigned char uch = (unsigned char)ch;
+    if (isalpha(uch))
     {
         // 字母：追加到组合串
-        g_composition.push_back((char)tolower((unsigned char)ch));
+        g_composition.push_back((char)tolower(uch));
+        RefreshCandidates();
+        return true;
+    }
+
+    if (ispunct(uch))
+    {
+        // 标点：拼音模式下也进组合串，让分词器统一跳过标点来识别拼音
+        // （候选窗就能完整显示用户输入的 "nin"shizuncheng）
+        g_composition.push_back(ch);
         RefreshCandidates();
         return true;
     }
@@ -283,6 +316,15 @@ bool IME_OnBackspace()
         return true;
     }
     return false;
+}
+
+bool IME_DeleteCompositionFront(int n)
+{
+    if (n <= 0 || g_composition.empty()) return false;
+    if ((size_t)n > g_composition.size()) n = (int)g_composition.size();
+    g_composition.erase(0, n);
+    RefreshCandidates();
+    return true;
 }
 
 int IME_GetComposition(wchar_t* buf, int bufLen)
