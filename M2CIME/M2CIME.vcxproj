@@ -164,6 +164,7 @@
     <ClInclude Include="CandidateWindow.h" />
     <ClInclude Include="LangBarButton.h" />
     <ClInclude Include="LangBarPunctButton.h" />
+    <ClInclude Include="LangBarWidthButton.h" />
     <ClInclude Include="StatusBar.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
@@ -177,6 +178,7 @@
     <ClCompile Include="CandidateWindow.cpp" />
     <ClCompile Include="LangBarButton.cpp" />
     <ClCompile Include="LangBarPunctButton.cpp" />
+    <ClCompile Include="LangBarWidthButton.cpp" />
     <ClCompile Include="StatusBar.cpp" />
     <ClCompile Include="..\MandarinToCantonese\IMEEngine.cpp" />
     <ClCompile Include="..\MandarinToCantonese\Dictionary.cpp" />

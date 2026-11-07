@@ -1,4 +1,4 @@
-// LangBarPunctButton.cpp —— 语言栏全角/半角标点切换按钮
+// LangBarPunctButton.cpp —— 语言栏中文/英文标点切换按钮
 #include "Globals.h"
 #include "LangBarPunctButton.h"
 #include "TextService.h"
@@ -8,16 +8,16 @@ CLangBarPunctButton::CLangBarPunctButton(CTextService* pService)
     , _pService(pService)
     , _pSink(nullptr)
     , _dwSinkCookie(TF_INVALID_COOKIE)
-    , _hIconFull(nullptr)
-    , _hIconHalf(nullptr)
+    , _hIconCn(nullptr)
+    , _hIconEn(nullptr)
 {
     DllAddRef();
 }
 
 CLangBarPunctButton::~CLangBarPunctButton()
 {
-    if (_hIconFull) { DestroyIcon(_hIconFull); _hIconFull = nullptr; }
-    if (_hIconHalf) { DestroyIcon(_hIconHalf); _hIconHalf = nullptr; }
+    if (_hIconCn) { DestroyIcon(_hIconCn); _hIconCn = nullptr; }
+    if (_hIconEn) { DestroyIcon(_hIconEn); _hIconEn = nullptr; }
     DllRelease();
 }
 
@@ -57,7 +57,7 @@ STDMETHODIMP CLangBarPunctButton::GetInfo(TF_LANGBARITEMINFO* pInfo)
     pInfo->clsidService = CLSID_M2CTextService;
     pInfo->guidItem = GUID_M2CLangBarPunctButton;
     pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY;  // 非菜单式，直接点击
-    pInfo->ulSort = 1;  // 排在模式按钮后面
+    pInfo->ulSort = 2;  // 排在宽度按钮后面
     wcscpy_s(pInfo->szDescription, M2C_PUNCT_BTN_DESC);
     return S_OK;
 }
@@ -74,16 +74,16 @@ STDMETHODIMP CLangBarPunctButton::Show(BOOL /*fShow*/) { return S_OK; }
 STDMETHODIMP CLangBarPunctButton::GetTooltipString(BSTR* pbstrToolTip)
 {
     if (!pbstrToolTip) return E_INVALIDARG;
-    const WCHAR* tip = M2C_TIP_HALFWIDTH;
+    const WCHAR* tip = M2C_TIP_EN_PUNCT;
     if (_pService && _pService->GetPunctMode() == IME_PUNCT_FULLWIDTH)
-        tip = M2C_TIP_FULLWIDTH;
+        tip = M2C_TIP_CN_PUNCT;
     *pbstrToolTip = SysAllocString(tip);
     return (*pbstrToolTip) ? S_OK : E_OUTOFMEMORY;
 }
 
 STDMETHODIMP CLangBarPunctButton::OnClick(TfLBIClick click, POINT /*pt*/, const RECT* /*prcArea*/)
 {
-    // 直接点击切换全角/半角
+    // 直接点击切换中文/英文标点
     (void)click;
     if (_pService)
         _pService->TogglePunctMode();
@@ -115,15 +115,17 @@ HICON CLangBarPunctButton::_GetPunctModeIcon()
 
     if (mode == IME_PUNCT_FULLWIDTH)
     {
-        if (_hIconFull == nullptr)
-            _hIconFull = _CreatePunctModeIcon(L"\u25B6", RGB(0, 120, 0));   // ▶  绿色：全角
-        return _hIconFull;
+        // ○ 蓝色：中文标点
+        if (_hIconCn == nullptr)
+            _hIconCn = _CreatePunctModeIcon(L"\u25CB", RGB(0, 95, 184));
+        return _hIconCn;
     }
     else
     {
-        if (_hIconHalf == nullptr)
-            _hIconHalf = _CreatePunctModeIcon(L"\u25B7", RGB(120, 120, 0)); // ▷  暗黄色：半角
-        return _hIconHalf;
+        // ● 灰色：英文标点
+        if (_hIconEn == nullptr)
+            _hIconEn = _CreatePunctModeIcon(L"\u25CF", RGB(90, 90, 90));
+        return _hIconEn;
     }
 }
 
@@ -225,9 +227,9 @@ HICON CLangBarPunctButton::_CreatePunctModeIcon(const WCHAR* text, COLORREF bg)
 STDMETHODIMP CLangBarPunctButton::GetText(BSTR* pbstrText)
 {
     if (!pbstrText) return E_INVALIDARG;
-    const WCHAR* text = L"\u25B7";   // ▷
+    const WCHAR* text = L"\u25CF";   // ● 英文标点
     if (_pService && _pService->GetPunctMode() == IME_PUNCT_FULLWIDTH)
-        text = L"\u25B6";             // ▶
+        text = L"\u25CB";             // ○ 中文标点
     *pbstrText = SysAllocString(text);
     return (*pbstrText) ? S_OK : E_OUTOFMEMORY;
 }

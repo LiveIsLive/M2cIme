@@ -147,6 +147,32 @@ ImePunctMode IME_GetPunctMode()
     return g_punctMode;
 }
 
+static ImeWidthMode g_widthMode = IME_WIDTH_HALFWIDTH;
+
+void IME_SetWidthMode(ImeWidthMode mode)
+{
+    g_widthMode = mode;
+}
+
+ImeWidthMode IME_GetWidthMode()
+{
+    return g_widthMode;
+}
+
+// ASCII → 全角字符：空格转 U+3000，可打印字符(0x21-0x7E) 加 0xFEE0
+wchar_t IME_ConvertCharWidth(char ch)
+{
+    wchar_t wc = (wchar_t)(unsigned char)ch;
+    if (g_widthMode == IME_WIDTH_FULLWIDTH)
+    {
+        if (ch == ' ')
+            return 0x3000;
+        if (ch >= 0x21 && ch <= 0x7E)
+            return (wchar_t)((unsigned char)ch + 0xFEE0);
+    }
+    return wc;
+}
+
 // 半角→全角标点映射表（只覆盖常用标点，空格除外）
 static bool MapHalfToFullPunct(char half, wchar_t* pFull)
 {
@@ -212,16 +238,17 @@ bool IME_OnChar(char ch)
 {
     EnsureInit();
 
-    // 英文模式：字母、数字、空格直接提交；标点根据全角/半角模式转换后提交
+    // 英文模式：字母、数字、空格直接提交；标点根据中文/英文标点模式转换后提交
     if (g_mode == IME_MODE_ENGLISH)
     {
         if (isalnum((unsigned char)ch) || ch == ' ')
         {
-            wchar_t wc = (wchar_t)(unsigned char)ch;
+            wchar_t wc = IME_ConvertCharWidth(ch);
             CommitRaw(std::wstring(1, wc));
             return true;
         }
-        // 标点符号：根据全角/半角模式转换
+        // 标点符号：根据中文/英文标点模式选择输出形式；
+        // 英文标点(ASCII)在全角宽度模式下再转成对应全角字符
         if (ch == ',' || ch == '.' || ch == '!' || ch == '?' ||
             ch == ';' || ch == ':' || ch == '\'' || ch == '"' ||
             ch == '-' || ch == '_' || ch == '(' || ch == ')' ||
@@ -232,6 +259,8 @@ bool IME_OnChar(char ch)
             ch == '@' || ch == '~' || ch == '^' || ch == '|')
         {
             wchar_t wc = IME_ConvertPunctChar(ch);
+            if (g_punctMode == IME_PUNCT_HALFWIDTH)
+                wc = IME_ConvertCharWidth((char)wc);
             CommitRaw(std::wstring(1, wc));
             return true;
         }
@@ -259,14 +288,14 @@ bool IME_OnChar(char ch)
 
     if (ch == ' ')
     {
-        // 空格：有组合串时提交第一个候选，否则提交空格
+        // 空格：有组合串时提交第一个候选，否则提交空格（全角模式下为全角空格）
         if (!g_composition.empty())
         {
             return CommitCandidate(0);
         }
         else
         {
-            CommitRaw(L" ");
+            CommitRaw(std::wstring(1, IME_ConvertCharWidth(' ')));
             return true;
         }
     }
@@ -297,10 +326,10 @@ bool IME_OnChar(char ch)
         return false;
     }
 
-    // 其它标点：有组合串时先不处理，交给前端；无组合串时直接提交
+    // 其它字符：有组合串时先不处理，交给前端；无组合串时直接提交（全角模式转全角）
     if (g_composition.empty())
     {
-        wchar_t wc = (wchar_t)(unsigned char)ch;
+        wchar_t wc = IME_ConvertCharWidth(ch);
         CommitRaw(std::wstring(1, wc));
         return true;
     }

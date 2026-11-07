@@ -1,4 +1,4 @@
-// StatusBar.cpp —— 输入法自带状态条（英/普/粤 切换）+ 全角/半角状态显示
+// StatusBar.cpp —— 输入法自带状态条（英/普/粤 切换）+ 中文/英文标点状态显示
 #include "Globals.h"
 #include "StatusBar.h"
 #include "TextService.h"
@@ -16,7 +16,7 @@ static const COLORREF kArrow     = RGB(140, 140, 140);
 
 CStatusBar::CStatusBar(CTextService* pService)
     : _pService(pService), _hwnd(nullptr), _hwndTip(nullptr), _fontMode(nullptr), _fontArrow(nullptr),
-      _fontPunct(nullptr), _hover(false), _tipMode{}, _tipPunct{}
+      _fontPunct(nullptr), _fontWidth(nullptr), _hover(false), _tipMode{}, _tipPunct{}, _tipWidth{}
 {
 }
 
@@ -56,12 +56,15 @@ void CStatusBar::_EnsureWindow()
         _fontPunct = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+        _fontWidth = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
         _Reposition();
         _EnsureTooltip();
     }
 }
 
-// 创建悬停提示：模式区、全角/半角区各一个工具项，文字随当前状态变化
+// 创建悬停提示：模式区、中文/英文标点区各一个工具项，文字随当前状态变化
 void CStatusBar::_EnsureTooltip()
 {
     if (_hwndTip || !_hwnd) return;
@@ -94,8 +97,14 @@ void CStatusBar::_EnsureTooltip()
 
     ti.uId = 2;
     ti.rect.left = kModeRight + 1;
-    ti.rect.right = kWidth;
+    ti.rect.right = kPunctRight;
     ti.lpszText = _tipPunct;
+    SendMessageW(_hwndTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+
+    ti.uId = 3;
+    ti.rect.left = kPunctRight + 1;
+    ti.rect.right = kWidthSegRight;
+    ti.lpszText = _tipWidth;
     SendMessageW(_hwndTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 
     _UpdateTooltipText();
@@ -113,7 +122,10 @@ void CStatusBar::_UpdateTooltipText()
     wcscpy_s(_tipMode, modeText);
 
     ImePunctMode punctMode = _pService ? _pService->GetPunctMode() : IME_PUNCT_HALFWIDTH;
-    wcscpy_s(_tipPunct, punctMode == IME_PUNCT_FULLWIDTH ? M2C_TIP_FULLWIDTH : M2C_TIP_HALFWIDTH);
+    wcscpy_s(_tipPunct, punctMode == IME_PUNCT_FULLWIDTH ? M2C_TIP_CN_PUNCT : M2C_TIP_EN_PUNCT);
+
+    ImeWidthMode widthMode = _pService ? _pService->GetWidthMode() : IME_WIDTH_HALFWIDTH;
+    wcscpy_s(_tipWidth, widthMode == IME_WIDTH_FULLWIDTH ? M2C_TIP_FULLWIDTH : M2C_TIP_HALFWIDTH);
 
     if (!_hwndTip) return;
 
@@ -126,6 +138,10 @@ void CStatusBar::_UpdateTooltipText()
     SendMessageW(_hwndTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
 
     ti.uId = 2;
+    ti.lpszText = _tipWidth;
+    SendMessageW(_hwndTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+
+    ti.uId = 3;
     ti.lpszText = _tipPunct;
     SendMessageW(_hwndTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
 }
@@ -196,6 +212,7 @@ void CStatusBar::_Destroy()
     if (_fontMode)  { DeleteObject(_fontMode);  _fontMode = nullptr; }
     if (_fontArrow) { DeleteObject(_fontArrow); _fontArrow = nullptr; }
     if (_fontPunct) { DeleteObject(_fontPunct); _fontPunct = nullptr; }
+    if (_fontWidth) { DeleteObject(_fontWidth); _fontWidth = nullptr; }
 }
 
 LRESULT CStatusBar::_OnPaint()
@@ -228,6 +245,7 @@ LRESULT CStatusBar::_OnPaint()
 
     ImeInputMode mode = _pService ? _pService->GetMode() : IME_MODE_MANDARIN;
     ImePunctMode punctMode = _pService ? _pService->GetPunctMode() : IME_PUNCT_HALFWIDTH;
+    ImeWidthMode widthMode = _pService ? _pService->GetWidthMode() : IME_WIDTH_HALFWIDTH;
     LPCWSTR text = L"普";
     COLORREF color = kTextCn;
     switch (mode)
@@ -241,33 +259,47 @@ LRESULT CStatusBar::_OnPaint()
     SelectObject(memDC, _fontMode);
     SetTextColor(memDC, color);
     RECT rcText = rc;
-    rcText.right = 40;  // 模式字占左边 40px
+    rcText.right = kModeRight;  // 模式字占左边 40px
     DrawTextW(memDC, text, 1, &rcText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    // 分隔线
+    // 分隔线（模式 / 宽度 / 标点 三段之间）
     HPEN sepPen = CreatePen(PS_SOLID, 1, kBorder);
     HGDIOBJ oldSepPen = SelectObject(memDC, sepPen);
-    MoveToEx(memDC, 38, 4, nullptr);
-    LineTo(memDC, 38, rc.bottom - 5);
+    MoveToEx(memDC, kModeRight, 4, nullptr);
+    LineTo(memDC, kModeRight, rc.bottom - 5);
+    MoveToEx(memDC, kPunctRight, 4, nullptr);
+    LineTo(memDC, kPunctRight, rc.bottom - 5);
+    MoveToEx(memDC, kWidthSegRight, 4, nullptr);
+    LineTo(memDC, kWidthSegRight, rc.bottom - 5);
     SelectObject(memDC, oldSepPen);
     DeleteObject(sepPen);
 
-    // 全角/半角状态符号（单字，更紧凑）
-    LPCWSTR punctText = (punctMode == IME_PUNCT_FULLWIDTH) ? L"\u25B6" : L"\u25B7";
-    COLORREF punctColor = (punctMode == IME_PUNCT_FULLWIDTH) ? RGB(0, 120, 0) : RGB(120, 120, 0);
+    // 全角/半角状态字（▶ 全角 / ▷ 半角）—— 放在标点前面
+    LPCWSTR widthText = (widthMode == IME_WIDTH_FULLWIDTH) ? L"\u25B6" : L"\u25B7";
+    COLORREF widthColor = (widthMode == IME_WIDTH_FULLWIDTH) ? kTextCn : kTextEn;
+    SelectObject(memDC, _fontWidth);
+    SetTextColor(memDC, widthColor);
+    RECT rcWidth = rc;
+    rcWidth.left = kModeRight;
+    rcWidth.right = kPunctRight;
+    DrawTextW(memDC, widthText, 1, &rcWidth, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    // 中文/英文标点状态符号（○ 中文标点 / ● 英文标点）
+    LPCWSTR punctText = (punctMode == IME_PUNCT_FULLWIDTH) ? L"\u25CB" : L"\u25CF";
+    COLORREF punctColor = (punctMode == IME_PUNCT_FULLWIDTH) ? kTextCn : kTextEn;
     SelectObject(memDC, _fontPunct);
     SetTextColor(memDC, punctColor);
     RECT rcPunct = rc;
-    rcPunct.left = 40;
-    rcPunct.right = rc.right - 22;
+    rcPunct.left = kPunctRight;
+    rcPunct.right = kWidthSegRight;
     DrawTextW(memDC, punctText, 1, &rcPunct, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // ▾
     SelectObject(memDC, _fontArrow);
     SetTextColor(memDC, kArrow);
     RECT rcArrow = rc;
-    rcArrow.left = rc.right - 24;
-    rcArrow.right = rc.right - 8;
+    rcArrow.left = kWidthSegRight;
+    rcArrow.right = rc.right - 4;
     DrawTextW(memDC, L"▼", 1, &rcArrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
@@ -286,13 +318,28 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
     // 获取点击位置（窗口客户区坐标）
     int clickX = GET_X_LPARAM(lParam);
 
-    // 左侧 0-39px 是模式字区域（含分隔线），点击弹出模式菜单
-    // 右侧 40px 以后是标点状态区域，点击切换全角/半角
-    if (clickX >= 40)
+    // 模式区（0 ~ kModeRight）：弹出模式菜单
+    // 宽度区（kModeRight ~ kPunctRight）：切换全角/半角
+    // 标点区（kPunctRight ~ kWidthSegRight）：切换中文/英文标点
+    if (clickX >= kModeRight && clickX < kPunctRight)
+    {
+        _pService->ToggleWidthMode();
+        _Update();
+        return;
+    }
+    if (clickX >= kPunctRight && clickX < kWidthSegRight)
     {
         _pService->TogglePunctMode();
         _Update();
         return;
+    }
+    if (clickX >= kWidthSegRight)
+    {
+        // 箭头区：也弹出模式菜单
+    }
+    else
+    {
+        // 模式区
     }
 
     HMENU menu = CreatePopupMenu();
@@ -351,7 +398,7 @@ LRESULT CALLBACK CStatusBar::_WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             TrackMouseEvent(&tme);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
-        // 转发鼠标移动，让提示窗口按所在区域弹出“模式/全角半角”提示
+        // 转发鼠标移动，让提示窗口按所在区域弹出“模式/标点”提示
         pThis->_RelayMouseToTooltip(WM_MOUSEMOVE, wParam, lParam);
         return 0;
     case WM_MOUSELEAVE:

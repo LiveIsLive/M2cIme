@@ -12,12 +12,20 @@ typedef enum ImeInputMode
     IME_MODE_CANTONESE = 2,  // 粤语：粤语词库强制排到最高
 } ImeInputMode;
 
-// 标点符号模式（全角/半角）
+// 标点符号模式（中文标点 / 英文标点）
 typedef enum ImePunctMode
 {
     IME_PUNCT_HALFWIDTH = 0,  // 半角（英文标点）
     IME_PUNCT_FULLWIDTH = 1,  // 全角（中文标点）
 } ImePunctMode;
+
+// 字符宽度模式（全角 / 半角）—— 与标点模式相互独立
+// 全角时，直接输出的 ASCII 字母、数字、符号、空格会被转换为对应全角字符
+typedef enum ImeWidthMode
+{
+    IME_WIDTH_HALFWIDTH = 0,  // 半角
+    IME_WIDTH_FULLWIDTH = 1,  // 全角
+} ImeWidthMode;
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,9 +39,17 @@ __declspec(dllexport) void IME_Init();
 __declspec(dllexport) void IME_SetMode(ImeInputMode mode);
 __declspec(dllexport) ImeInputMode IME_GetMode();
 
-// 切换 / 查询标点符号模式（全角/半角）
+// 切换 / 查询标点符号模式（中文标点/英文标点）
 __declspec(dllexport) void IME_SetPunctMode(ImePunctMode mode);
 __declspec(dllexport) ImePunctMode IME_GetPunctMode();
+
+// 切换 / 查询字符宽度模式（全角/半角）
+__declspec(dllexport) void IME_SetWidthMode(ImeWidthMode mode);
+__declspec(dllexport) ImeWidthMode IME_GetWidthMode();
+
+// 按当前宽度模式转换一个 ASCII 字符：全角时返回对应全角字符，否则原样返回
+// 空格 → 全角空格(U+3000)，可打印 ASCII(0x21-0x7E) → +0xFEE0
+__declspec(dllexport) wchar_t IME_ConvertCharWidth(char ch);
 
 // 在英文模式下，根据当前标点模式转换一个半角标点为全角/半角
 // 返回转换后的宽字符（若无需转换则原样返回）

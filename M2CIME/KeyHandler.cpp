@@ -93,7 +93,7 @@ BOOL CTextService::_MapPunct(WPARAM vk, WCHAR* pCn, WCHAR* pEn)
     return TRUE;
 }
 
-// 返回指定标点字符的全部候选形式（候选顺序根据当前全角/半角状态动态排列）
+// 返回指定标点字符的全部候选形式（候选顺序根据当前中文/英文标点状态动态排列）
 // 当前每种标点默认返回 2 种：中文 / 英文；引号类（' "）额外返回中文左右配对
 static int _BuildPunctCandidates(WCHAR cn, WCHAR en, bool fFullwidth,
                                  std::vector<std::wstring>& out)
@@ -274,6 +274,63 @@ static bool IsCtrlAltDown()
     return (GetKeyState(VK_CONTROL) & 0x8000) || (GetKeyState(VK_MENU) & 0x8000);
 }
 
+// 把按键(vk + Shift 状态)映射成对应的 ASCII 可打印字符；非可打印返回 0
+static char _VkToAsciiChar(WPARAM vk)
+{
+    bool fShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (vk >= 'A' && vk <= 'Z')
+        return (char)(fShift ? vk : (vk - 'A' + 'a'));
+    if (vk >= '0' && vk <= '9')
+        return (char)vk;
+    if (vk == VK_SPACE)
+        return ' ';
+    if (!fShift)
+    {
+        switch (vk)
+        {
+        case VK_OEM_MINUS:  return '-';
+        case VK_OEM_PLUS:   return '=';
+        case VK_OEM_COMMA:  return ',';
+        case VK_OEM_PERIOD: return '.';
+        case VK_OEM_1:      return ';';
+        case VK_OEM_2:      return '/';
+        case VK_OEM_3:      return '`';
+        case VK_OEM_4:      return '[';
+        case VK_OEM_5:      return '\\';
+        case VK_OEM_6:      return ']';
+        case VK_OEM_7:      return '\'';
+        }
+    }
+    else
+    {
+        switch (vk)
+        {
+        case '0':           return ')';
+        case '1':           return '!';
+        case '2':           return '@';
+        case '3':           return '#';
+        case '4':           return '$';
+        case '5':           return '%';
+        case '6':           return '^';
+        case '7':           return '&';
+        case '8':           return '*';
+        case '9':           return '(';
+        case VK_OEM_MINUS:  return '_';
+        case VK_OEM_PLUS:   return '+';
+        case VK_OEM_COMMA:  return '<';
+        case VK_OEM_PERIOD: return '>';
+        case VK_OEM_1:      return ':';
+        case VK_OEM_2:      return '?';
+        case VK_OEM_3:      return '~';
+        case VK_OEM_4:      return '{';
+        case VK_OEM_5:      return '|';
+        case VK_OEM_6:      return '}';
+        case VK_OEM_7:      return '"';
+        }
+    }
+    return 0;
+}
+
 BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
 {
     // Shift 永远不消费（用于 OnKeyUp 切换中英文）
@@ -282,13 +339,20 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
 
     if (IsCtrlAltDown()) return FALSE;   // 快捷键放行
 
-    // 英文模式：拦截标点键以便根据全角/半角状态转换后输出
-    // 字母、数字、空格键、功能键仍然放行
+    // 英文模式：拦截标点键以便根据中文/英文标点状态转换后输出
+    // 字母、数字、空格键、功能键仍然放行；全角模式下字母/数字/空格也拦截（转全角输出）
     if (_mode == IME_MODE_ENGLISH)
     {
         WCHAR cn = 0, en = 0;
         if (_MapPunct(wParam, &cn, &en))
             return TRUE;  // 消费标点
+        if (_widthMode == IME_WIDTH_FULLWIDTH)
+        {
+            if ((wParam >= 'A' && wParam <= 'Z') ||
+                (wParam >= '0' && wParam <= '9') ||
+                wParam == VK_SPACE)
+                return TRUE;
+        }
         return FALSE;
     }
 
@@ -342,6 +406,16 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
         wParam == VK_OEM_MINUS || wParam == VK_OEM_PLUS)
     {
         return fHasComp ? TRUE : FALSE;
+    }
+
+    // 全角模式：对本应直通应用的可打印 ASCII 转全角输出
+    // （大写字母、无组合串的数字、未映射的符号）
+    if (_widthMode == IME_WIDTH_FULLWIDTH && _VkToAsciiChar(wParam) != 0)
+    {
+        // 数字 1-9 在有组合串时用于选词，不走全角直通
+        if (wParam >= '1' && wParam <= '9' && fHasComp)
+            return FALSE;
+        return TRUE;
     }
 
     return FALSE;
@@ -453,14 +527,62 @@ STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID /*rg
 
 void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WPARAM wParam)
 {
-    // 英文模式：直接根据全角/半角状态输出标点
+    // 全角模式：对"直通"的可打印 ASCII 直接转全角插入（不进拼音流程）
+    // 英文模式：字母/数字/空格（标点在下方英文分支走引擎）
+    // 中文模式：Shift+大写字母、无组合串的数字、未映射符号
+    if (_widthMode == IME_WIDTH_FULLWIDTH)
+    {
+        bool fDirect = false;
+        char ch = 0;
+        if (_mode == IME_MODE_ENGLISH)
+        {
+            if (wParam >= 'A' && wParam <= 'Z')      { ch = (char)(wParam - 'A' + 'a'); fDirect = true; }
+            else if (wParam >= '0' && wParam <= '9') { ch = (char)wParam; fDirect = true; }
+            else if (wParam == VK_SPACE)             { ch = ' '; fDirect = true; }
+        }
+        else
+        {
+            bool fShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if ((wParam >= 'A' && wParam <= 'Z') && fShift)
+            {
+                ch = (char)wParam; fDirect = true;   // 大写字母
+            }
+            else if (wParam >= '0' && wParam <= '9')
+            {
+                if (!IME_HasComposition())            // 无组合串的数字直通
+                { ch = (char)wParam; fDirect = true; }
+            }
+            else
+            {
+                // 未被 _MapPunct 映射的可打印符号
+                WCHAR cn = 0, en = 0;
+                if (!_MapPunct(wParam, &cn, &en))
+                {
+                    char c2 = _VkToAsciiChar(wParam);
+                    if (c2 != 0) { ch = c2; fDirect = true; }
+                }
+            }
+        }
+        if (fDirect && ch != 0)
+        {
+            wchar_t wc = IME_ConvertCharWidth(ch);
+            _InsertTextAtSelection(ec, pContext, &wc, 1);
+            _keyHandledInSession = true;
+            return;
+        }
+    }
+
+    // 英文模式：直接根据中文/英文标点状态输出标点
     if (_mode == IME_MODE_ENGLISH)
     {
         WCHAR cn = 0, en = 0;
         if (_MapPunct(wParam, &cn, &en))
         {
-            // 全角状态输出中文标点(cn)，半角状态输出英文标点(en)
+            // 中文标点状态输出中文标点(cn)，英文标点状态输出英文标点(en)
             WCHAR outCh = (_punctMode == IME_PUNCT_FULLWIDTH) ? cn : en;
+            // 英文标点(ASCII)在全角宽度模式下转成对应全角字符
+            if (_punctMode == IME_PUNCT_HALFWIDTH && _widthMode == IME_WIDTH_FULLWIDTH)
+                outCh = IME_ConvertCharWidth((char)outCh);
             if (outCh != 0)
             {
                 _InsertTextAtSelection(ec, pContext, &outCh, 1);

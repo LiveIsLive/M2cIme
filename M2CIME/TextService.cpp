@@ -4,11 +4,13 @@
 #include "CandidateWindow.h"
 #include "LangBarButton.h"
 #include "LangBarPunctButton.h"
+#include "LangBarWidthButton.h"
 #include "StatusBar.h"
 
 #define M2C_REG_KEY     L"Software\\M2CIME"
 #define M2C_REG_MODE    L"Mode"
 #define M2C_REG_PUNCT   L"PunctMode"
+#define M2C_REG_WIDTH   L"WidthMode"
 
 CTextService::CTextService()
     : _cRef(1)
@@ -19,10 +21,12 @@ CTextService::CTextService()
     , _pCandidateWnd(nullptr)
     , _pLangBarButton(nullptr)
     , _pLangBarPunctButton(nullptr)
+    , _pLangBarWidthButton(nullptr)
     , _pStatusBar(nullptr)
     , _mode(IME_MODE_MANDARIN)
     , _lastChineseMode(IME_MODE_MANDARIN)
     , _punctMode(IME_PUNCT_HALFWIDTH)
+    , _widthMode(IME_WIDTH_HALFWIDTH)
     , _shiftPressed(false)
     , _keyHandledInSession(false)
     , _pageIndex(0)
@@ -38,8 +42,10 @@ CTextService::CTextService()
     IME_Init();
     _LoadModeFromRegistry();
     _LoadPunctModeFromRegistry();
+    _LoadWidthModeFromRegistry();
     IME_SetMode(_mode);
     IME_SetPunctMode(_punctMode);
+    IME_SetWidthMode(_widthMode);
     SetRectEmpty(&_caretRect);
     _punctBeforeCn[0] = 0;
     _punctBeforeEn[0] = 0;
@@ -139,9 +145,13 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
         _pLangBarButton = new CLangBarButton(this);
         pLbiMgr->AddItem(_pLangBarButton);
 
-        // 全角/半角标点切换按钮
+        // 中文/英文标点切换按钮
         _pLangBarPunctButton = new CLangBarPunctButton(this);
         pLbiMgr->AddItem(_pLangBarPunctButton);
+
+        // 全角/半角切换按钮
+        _pLangBarWidthButton = new CLangBarWidthButton(this);
+        pLbiMgr->AddItem(_pLangBarWidthButton);
 
         pLbiMgr->Release();
     }
@@ -166,8 +176,8 @@ STDMETHODIMP CTextService::Deactivate()
         _pStatusBar = nullptr;
     }
 
-    // 移除语言栏按钮（模式切换 + 全角/半角切换）
-    if (_pLangBarButton || _pLangBarPunctButton)
+    // 移除语言栏按钮（模式切换 + 中文/英文标点切换 + 全角/半角切换）
+    if (_pLangBarButton || _pLangBarPunctButton || _pLangBarWidthButton)
     {
         ITfLangBarItemMgr* pLbiMgr = nullptr;
         if (_pThreadMgr && SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfLangBarItemMgr, (void**)&pLbiMgr)))
@@ -184,6 +194,12 @@ STDMETHODIMP CTextService::Deactivate()
                 _pLangBarPunctButton->Release();
                 _pLangBarPunctButton = nullptr;
             }
+            if (_pLangBarWidthButton)
+            {
+                pLbiMgr->RemoveItem(_pLangBarWidthButton);
+                _pLangBarWidthButton->Release();
+                _pLangBarWidthButton = nullptr;
+            }
             pLbiMgr->Release();
         }
         else
@@ -191,6 +207,7 @@ STDMETHODIMP CTextService::Deactivate()
             // 即使获取不到 LangBarItemMgr，也要释放按钮
             if (_pLangBarButton) { _pLangBarButton->Release(); _pLangBarButton = nullptr; }
             if (_pLangBarPunctButton) { _pLangBarPunctButton->Release(); _pLangBarPunctButton = nullptr; }
+            if (_pLangBarWidthButton) { _pLangBarWidthButton->Release(); _pLangBarWidthButton = nullptr; }
         }
     }
 
@@ -268,6 +285,7 @@ STDMETHODIMP CTextService::OnActivated(REFCLSID clsid, REFGUID guidProfile, BOOL
 
 void CTextService::SetMode(ImeInputMode mode, bool fSaveToRegistry)
 {
+    bool fModeChanged = (_mode != mode);
     _mode = mode;
     if (mode != IME_MODE_ENGLISH)
         _lastChineseMode = mode;
@@ -276,6 +294,13 @@ void CTextService::SetMode(ImeInputMode mode, bool fSaveToRegistry)
     _ClearPunctPending();
     _pageIndex = 0;
     if (_pCandidateWnd) _pCandidateWnd->_Hide();
+
+    // 标点模式跟随输入模式默认值：英文模式默认英文标点，中文模式默认中文标点
+    if (fModeChanged)
+    {
+        SetPunctMode(mode == IME_MODE_ENGLISH ? IME_PUNCT_HALFWIDTH : IME_PUNCT_FULLWIDTH,
+                     fSaveToRegistry);
+    }
 
     if (fSaveToRegistry)
     {
@@ -310,10 +335,13 @@ void CTextService::_LoadModeFromRegistry()
 
 void CTextService::_LoadPunctModeFromRegistry()
 {
+    // 无持久化值时按输入模式取默认：英文模式 = 英文标点，中文模式 = 中文标点
+    _punctMode = (_mode == IME_MODE_ENGLISH) ? IME_PUNCT_HALFWIDTH : IME_PUNCT_FULLWIDTH;
+
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
-        DWORD type = 0, size = sizeof(DWORD), v = IME_PUNCT_HALFWIDTH;
+        DWORD type = 0, size = sizeof(DWORD), v = 0;
         if (RegQueryValueExW(hKey, M2C_REG_PUNCT, nullptr, &type, (BYTE*)&v, &size) == ERROR_SUCCESS
             && type == REG_DWORD && v <= IME_PUNCT_FULLWIDTH)
         {
@@ -359,6 +387,58 @@ void CTextService::_UpdateLangBarPunctButton()
 {
     if (_pLangBarPunctButton)
         _pLangBarPunctButton->_NotifyUpdate();
+    if (_pStatusBar)
+        _pStatusBar->_Update();
+}
+
+// ================= 全角/半角 =================
+
+void CTextService::SetWidthMode(ImeWidthMode mode, bool fSaveToRegistry)
+{
+    _widthMode = mode;
+    IME_SetWidthMode(mode);
+
+    if (fSaveToRegistry)
+    {
+        HKEY hKey = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, nullptr,
+                            REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+        {
+            DWORD v = (DWORD)mode;
+            RegSetValueExW(hKey, M2C_REG_WIDTH, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+            RegCloseKey(hKey);
+        }
+    }
+    _UpdateLangBarWidthButton();
+}
+
+void CTextService::ToggleWidthMode()
+{
+    SetWidthMode(_widthMode == IME_WIDTH_FULLWIDTH ? IME_WIDTH_HALFWIDTH : IME_WIDTH_FULLWIDTH);
+}
+
+void CTextService::_LoadWidthModeFromRegistry()
+{
+    // 默认半角
+    _widthMode = IME_WIDTH_HALFWIDTH;
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD type = 0, size = sizeof(DWORD), v = 0;
+        if (RegQueryValueExW(hKey, M2C_REG_WIDTH, nullptr, &type, (BYTE*)&v, &size) == ERROR_SUCCESS
+            && type == REG_DWORD && v <= IME_WIDTH_FULLWIDTH)
+        {
+            _widthMode = (ImeWidthMode)v;
+        }
+        RegCloseKey(hKey);
+    }
+}
+
+void CTextService::_UpdateLangBarWidthButton()
+{
+    if (_pLangBarWidthButton)
+        _pLangBarWidthButton->_NotifyUpdate();
     if (_pStatusBar)
         _pStatusBar->_Update();
 }

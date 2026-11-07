@@ -1,6 +1,6 @@
 #pragma once
 
-// CLangBarPunctButton —— 语言栏全角/半角标点切换按钮
+// CLangBarPunctButton —— 语言栏中文/英文标点切换按钮
 #include "Globals.h"
 
 class CTextService;
@@ -49,6 +49,6 @@ private:
     CTextService* _pService;
     ITfLangBarItemSink* _pSink;
     DWORD _dwSinkCookie;
-    HICON _hIconFull;   // 全角图标
-    HICON _hIconHalf;   // 半角图标
+    HICON _hIconCn;     // 中文标点图标（○）
+    HICON _hIconEn;     // 英文标点图标（●）
 };
