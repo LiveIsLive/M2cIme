@@ -101,6 +101,29 @@ namespace
         return covered;
     }
 
+    // 输入串已经开始的音节数，即声母个数，用于限制候选词的字数：
+    //   "suoyou" -> suo + you        -> 2（s + y）
+    //   "suoy"   -> suo + y(未输完)  -> 2
+    //   "nihaom" -> ni + hao + m(未输完) -> 3
+    //   "jx"     -> 纯声母串         -> 2（每个声母字母算一个）
+    size_t CountInputInitials(const std::string& query)
+    {
+        // 声母字母（含 zh/ch/sh 的 z/c/s、零声母音节的 y/w）
+        static const char kInitialLetters[] = "bpmfdtnlgkhjqxzcsryw";
+
+        std::string remainder;
+        const auto syllables = PinyinSegmenter::Segment(query, &remainder);
+
+        size_t count = syllables.size();
+        // 尾部尚未成型的音节：每个声母字母代表又开了一个音节（如 nhao 的 n、h）
+        for (char c : remainder)
+        {
+            if (std::string(kInitialLetters).find(c) != std::string::npos)
+                ++count;
+        }
+        return (count > 0) ? count : query.size();
+    }
+
     // 第 off 个字符起、长度为 len 的音节的声母长度（zh/ch/sh 为 2，其余为 1）
     size_t InitialLenAt(const std::string& pinyin, size_t off, size_t len)
     {
@@ -111,6 +134,51 @@ namespace
             if ((c0 == 'z' || c0 == 'c' || c0 == 's') && c1 == 'h') return 2;
         }
         return 1;
+    }
+
+    // 声母简拼匹配结果：
+    //   None   —— 不匹配
+    //   Prefix —— 已匹配若干音节，输入串用完但词还有剩余音节（如 sm -> 说明书）
+    //   Full   —— 输入串正好覆盖全部音节（如 sms / shmsh -> 说明书）
+    enum class InitialsMatch { None, Prefix, Full };
+
+    // 逐音节匹配声母简拼。每个音节的声母既可写完整形式（zh/ch/sh 两个字母），
+    // 也可只写首字母（z/c/s 分别代表 zh/ch/sh），
+    // 因此「说明书」(shuo ming shu) 用 shmsh 或 sms 都能命中。
+    InitialsMatch MatchInitials(const std::string& pinyin, const std::string& sylLens,
+                                const std::string& query)
+    {
+        if (query.empty() || sylLens.empty()) return InitialsMatch::None;
+
+        size_t qpos = 0;
+        size_t off = 0;
+        for (size_t i = 0; i < sylLens.size(); ++i)
+        {
+            const size_t len = (size_t)(unsigned char)sylLens[i];
+            if (len == 0 || off + len > pinyin.size()) return InitialsMatch::None;
+
+            if (qpos == query.size())
+                return (i > 0) ? InitialsMatch::Prefix : InitialsMatch::None;
+
+            const size_t initialLen = InitialLenAt(pinyin, off, len);
+            // 1) 完整声母（zh / ch / sh 两个字母）
+            if (initialLen > 1 && qpos + initialLen <= query.size() &&
+                query.compare(qpos, initialLen, pinyin, off, initialLen) == 0)
+            {
+                qpos += initialLen;
+            }
+            // 2) 首字母声母（z / c / s 也可代表 zh / ch / sh）
+            else if (query[qpos] == pinyin[off])
+            {
+                ++qpos;
+            }
+            else
+            {
+                return InitialsMatch::None;
+            }
+            off += len;
+        }
+        return (qpos == query.size()) ? InitialsMatch::Full : InitialsMatch::None;
     }
 
     // 混拼匹配结果：
@@ -146,6 +214,12 @@ namespace
             query.compare(qpos, initialLen, pinyin, off, initialLen) == 0)
         {
             const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + initialLen);
+            if (r != MixedMatch::None) return r;
+        }
+        // 2b) zh/ch/sh 只输入首字母（如 sms 的最后一个 s 代表「书」的 sh）
+        if (initialLen > 1 && qpos < query.size() && query[qpos] == pinyin[off])
+        {
+            const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + 1);
             if (r != MixedMatch::None) return r;
         }
         // 3) 该音节只输入了一部分（正在输入中，如 nha 里的 ha）
@@ -337,11 +411,27 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
         if (pinyinMatch && elen < plen && e.nasalOnly)
             continue;
 
-        bool initialsMatch = false;
-        if (!pinyinMatch && qlen > 0 && e.initials.size() >= qlen)
+        // 声母简拼：输入串恰好是各音节声母拼接的前缀（如输入 nh 命中「你好」、
+        // sms 命中「说明书」）。zh/ch/sh 的声母可写两个字母，也可只写首字母。
+        bool initialsFull = false;
+        bool initialsPrefix = false;
+        if (!pinyinMatch && qlen > 0)
         {
-            initialsMatch = (e.initials.compare(0, qlen, initialsQuery) == 0);
+            if (!e.sylLens.empty())
+            {
+                const InitialsMatch im = MatchInitials(e.pinyin, e.sylLens, initialsQuery);
+                initialsFull = (im == InitialsMatch::Full);
+                initialsPrefix = (im == InitialsMatch::Prefix);
+            }
+            else if (e.initials.size() >= qlen &&
+                     e.initials.compare(0, qlen, initialsQuery) == 0)
+            {
+                // 无音节长度信息时退回整串声母前缀比较
+                initialsFull = (e.initials.size() == qlen);
+                initialsPrefix = !initialsFull;
+            }
         }
+        const bool initialsMatch = initialsFull || initialsPrefix;
 
         // 混拼：至少两个音节时才有意义（单音节用全拼 / 声母前缀已能覆盖），
         // 首字母必须相同，避免对全词库做无意义的逐音节匹配。
@@ -374,9 +464,13 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
             else if (CoveredSyllableCount(e.sylLens, plen) >= 2) rank = 1; // douba → 豆瓣
             else rank = (e.word.size() == 1) ? 2 : 3;
         }
-        else if (initialsMatch || mixedFull)
+        else if (initialsFull || mixedFull)
         {
-            rank = (initialsMatch && e.initials.size() != qlen) ? 4 : 1;
+            rank = 1;   // 声母 / 混拼完整匹配（nh → 你好；sms → 说明书）
+        }
+        else if (initialsPrefix)
+        {
+            rank = 4;   // 声母前缀匹配（只命中词的前几个音节）
         }
         else
         {
@@ -451,12 +545,20 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
             return a.weight > b.weight;
         });
 
-    // 纯声母输入（如 jx、ryjx，整串不是合法拼音）时，只保留字数不超过声母数量的词，
-    // 避免「教学活动」「集线器」这类更长的词挤进短声母候选列表。
-    if (qlen >= 2 && !IsValidPinyinSequence(initialsQuery))
+    // 候选词字数不得超过输入串已声明的声母个数（音节数）：
+    // 例如输入 suoyou（s + y 两个声母）时只保留 2 字以内的词，
+    // 不再列出「所有人」「所有作品」这类靠前缀补全混进来的更长词；
+    // 纯声母输入（jx、ryjx）同样按声母个数（字母数）限制，排除「教学活动」「集线器」。
+    // 仅裁掉拼音比输入更长的“补全”词：拼音与输入等长的属于精确匹配，
+    // 不受 xian（先 / 西安）这类切分歧义影响。
+    const size_t inputInitials = CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery);
+    if (inputInitials >= 2)
     {
         result.erase(std::remove_if(result.begin(), result.end(),
-            [qlen](const DictEntry& e) { return e.word.size() > qlen; }),
+            [inputInitials, plen](const DictEntry& e)
+            {
+                return e.pinyin.size() > plen && e.word.size() > inputInitials;
+            }),
             result.end());
     }
 
