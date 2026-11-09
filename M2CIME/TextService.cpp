@@ -5,12 +5,14 @@
 #include "LangBarButton.h"
 #include "LangBarPunctButton.h"
 #include "LangBarWidthButton.h"
+#include "LangBarVariantButton.h"
 #include "StatusBar.h"
 
 #define M2C_REG_KEY     L"Software\\M2CIME"
 #define M2C_REG_MODE    L"Mode"
 #define M2C_REG_PUNCT   L"PunctMode"
 #define M2C_REG_WIDTH   L"WidthMode"
+#define M2C_REG_VARIANT L"Variant"
 
 CTextService::CTextService()
     : _cRef(1)
@@ -22,11 +24,13 @@ CTextService::CTextService()
     , _pLangBarButton(nullptr)
     , _pLangBarPunctButton(nullptr)
     , _pLangBarWidthButton(nullptr)
+    , _pLangBarVariantButton(nullptr)
     , _pStatusBar(nullptr)
     , _mode(IME_MODE_MANDARIN)
     , _lastChineseMode(IME_MODE_MANDARIN)
     , _punctMode(IME_PUNCT_HALFWIDTH)
     , _widthMode(IME_WIDTH_HALFWIDTH)
+    , _chineseVariant(IME_VARIANT_SIMPLIFIED)
     , _shiftPressed(false)
     , _keyHandledInSession(false)
     , _pageIndex(0)
@@ -43,9 +47,11 @@ CTextService::CTextService()
     _LoadModeFromRegistry();
     _LoadPunctModeFromRegistry();
     _LoadWidthModeFromRegistry();
+    _LoadChineseVariantFromRegistry();
     IME_SetMode(_mode);
     IME_SetPunctMode(_punctMode);
     IME_SetWidthMode(_widthMode);
+    IME_SetChineseVariant(_chineseVariant);
     SetRectEmpty(&_caretRect);
     _punctBeforeCn[0] = 0;
     _punctBeforeEn[0] = 0;
@@ -153,6 +159,10 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
         _pLangBarWidthButton = new CLangBarWidthButton(this);
         pLbiMgr->AddItem(_pLangBarWidthButton);
 
+        // 简体/繁体切换按钮
+        _pLangBarVariantButton = new CLangBarVariantButton(this);
+        pLbiMgr->AddItem(_pLangBarVariantButton);
+
         pLbiMgr->Release();
     }
 
@@ -176,8 +186,8 @@ STDMETHODIMP CTextService::Deactivate()
         _pStatusBar = nullptr;
     }
 
-    // 移除语言栏按钮（模式切换 + 中文/英文标点切换 + 全角/半角切换）
-    if (_pLangBarButton || _pLangBarPunctButton || _pLangBarWidthButton)
+    // 移除语言栏按钮（模式切换 + 中文/英文标点切换 + 全角/半角切换 + 简体/繁体切换）
+    if (_pLangBarButton || _pLangBarPunctButton || _pLangBarWidthButton || _pLangBarVariantButton)
     {
         ITfLangBarItemMgr* pLbiMgr = nullptr;
         if (_pThreadMgr && SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfLangBarItemMgr, (void**)&pLbiMgr)))
@@ -200,6 +210,12 @@ STDMETHODIMP CTextService::Deactivate()
                 _pLangBarWidthButton->Release();
                 _pLangBarWidthButton = nullptr;
             }
+            if (_pLangBarVariantButton)
+            {
+                pLbiMgr->RemoveItem(_pLangBarVariantButton);
+                _pLangBarVariantButton->Release();
+                _pLangBarVariantButton = nullptr;
+            }
             pLbiMgr->Release();
         }
         else
@@ -208,6 +224,7 @@ STDMETHODIMP CTextService::Deactivate()
             if (_pLangBarButton) { _pLangBarButton->Release(); _pLangBarButton = nullptr; }
             if (_pLangBarPunctButton) { _pLangBarPunctButton->Release(); _pLangBarPunctButton = nullptr; }
             if (_pLangBarWidthButton) { _pLangBarWidthButton->Release(); _pLangBarWidthButton = nullptr; }
+            if (_pLangBarVariantButton) { _pLangBarVariantButton->Release(); _pLangBarVariantButton = nullptr; }
         }
     }
 
@@ -439,6 +456,65 @@ void CTextService::_UpdateLangBarWidthButton()
 {
     if (_pLangBarWidthButton)
         _pLangBarWidthButton->_NotifyUpdate();
+    if (_pStatusBar)
+        _pStatusBar->_Update();
+}
+
+// ================= 简体/繁体 =================
+
+void CTextService::SetChineseVariant(ImeChineseVariant variant, bool fSaveToRegistry)
+{
+    _chineseVariant = variant;
+    IME_SetChineseVariant(variant);
+
+    if (fSaveToRegistry)
+    {
+        HKEY hKey = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, nullptr,
+                            REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+        {
+            DWORD v = (DWORD)variant;
+            RegSetValueExW(hKey, M2C_REG_VARIANT, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+            RegCloseKey(hKey);
+        }
+    }
+
+    // 正在输入时，候选窗里的字也要立即换成新字形
+    if (_pCandidateWnd && IME_HasComposition())
+        _UpdateCandidateWindow(nullptr, _hasCaretRect ? &_caretRect : nullptr);
+
+    _UpdateLangBarVariantButton();
+}
+
+void CTextService::ToggleChineseVariant()
+{
+    SetChineseVariant(_chineseVariant == IME_VARIANT_TRADITIONAL
+                          ? IME_VARIANT_SIMPLIFIED
+                          : IME_VARIANT_TRADITIONAL);
+}
+
+void CTextService::_LoadChineseVariantFromRegistry()
+{
+    // 默认简体
+    _chineseVariant = IME_VARIANT_SIMPLIFIED;
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD type = 0, size = sizeof(DWORD), v = 0;
+        if (RegQueryValueExW(hKey, M2C_REG_VARIANT, nullptr, &type, (BYTE*)&v, &size) == ERROR_SUCCESS
+            && type == REG_DWORD && v <= IME_VARIANT_TRADITIONAL)
+        {
+            _chineseVariant = (ImeChineseVariant)v;
+        }
+        RegCloseKey(hKey);
+    }
+}
+
+void CTextService::_UpdateLangBarVariantButton()
+{
+    if (_pLangBarVariantButton)
+        _pLangBarVariantButton->_NotifyUpdate();
     if (_pStatusBar)
         _pStatusBar->_Update();
 }

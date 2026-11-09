@@ -1,7 +1,7 @@
 #pragma once
 
 // CStatusBar —— 输入法自带的状态条（常驻"语言栏"，点击弹出 英/普/粤 菜单）
-// 扩展：同时显示中文/英文标点状态，点击切换
+// 扩展：同时显示中文/英文标点、全角/半角、简体/繁体状态，点击对应区域切换
 #include "Globals.h"
 
 class CTextService;
@@ -35,14 +35,17 @@ private:
     HFONT _fontArrow;
     HFONT _fontPunct;
     HFONT _fontWidth;
+    HFONT _fontVariant;
     bool _hover;
-    WCHAR _tipMode[16];   // 模式区悬停提示（当前模式名）
-    WCHAR _tipPunct[16];  // 中文/英文标点区悬停提示（当前状态）
-    WCHAR _tipWidth[16];  // 全角/半角区悬停提示（当前状态）
+    WCHAR _tipMode[16];    // 模式区悬停提示（当前模式名）
+    WCHAR _tipPunct[16];   // 中文/英文标点区悬停提示（当前状态）
+    WCHAR _tipWidth[16];   // 全角/半角区悬停提示（当前状态）
+    WCHAR _tipVariant[16]; // 简体/繁体区悬停提示（当前状态）
 
-    static const int kWidth  = 144;  // 模式 + 标点 + 全角/半角 + 箭头
+    static const int kWidth  = 183;  // 模式 + 全角/半角 + 标点 + 简/繁 + 箭头
     static const int kHeight = 34;
-    static const int kModeRight  = 40;  // 模式区右边界（分隔线左侧）
-    static const int kPunctRight = 79;  // 标点区右边界（分隔线左侧）
-    static const int kWidthSegRight = 118; // 宽度区右边界（分隔线左侧）
+    static const int kModeRight    = 40;   // 模式区右边界（分隔线位置）
+    static const int kWidthRight   = 79;   // 全角/半角区右边界
+    static const int kPunctRight   = 118;  // 中文/英文标点区右边界
+    static const int kVariantRight = 157;  // 简体/繁体区右边界（右侧为箭头）
 };

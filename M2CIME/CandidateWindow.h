@@ -39,6 +39,7 @@ private:
     void _EnsureWindow();
     void _RecalcLayout();     // 计算各区域矩形与窗口尺寸
     int  _HitTest(int y) const; // 返回候选项索引，-1 表示不在候选项上
+    const WCHAR* _SourceTag() const; // 粤语来源标记（简/繁自适应）
 
 private:
     CTextService* _pService;

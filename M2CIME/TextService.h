@@ -11,6 +11,7 @@ class CCandidateWindow;
 class CLangBarButton;
 class CLangBarPunctButton;
 class CLangBarWidthButton;
+class CLangBarVariantButton;
 class CStatusBar;
 
 class CTextService :
@@ -65,6 +66,11 @@ public:
     ImeWidthMode GetWidthMode() const { return _widthMode; }
     void  ToggleWidthMode();
 
+    // 简体/繁体切换（只影响汉字候选与上屏文本）
+    void  SetChineseVariant(ImeChineseVariant variant, bool fSaveToRegistry = true);
+    ImeChineseVariant GetChineseVariant() const { return _chineseVariant; }
+    void  ToggleChineseVariant();
+
     // 候选窗鼠标点击选词回调
     void OnCandidateClicked(int itemIndexOnPage);
 
@@ -100,11 +106,13 @@ private:
     void _LoadModeFromRegistry();
     void _LoadPunctModeFromRegistry();
     void _LoadWidthModeFromRegistry();
+    void _LoadChineseVariantFromRegistry();
 
     // 语言栏按钮文字刷新
     void _UpdateLangBarButton();
     void _UpdateLangBarPunctButton();
     void _UpdateLangBarWidthButton();
+    void _UpdateLangBarVariantButton();
 
     // 当前线程的活动输入法是否为本输入法
     BOOL _IsM2CProfileActive();
@@ -123,12 +131,14 @@ private:
     CLangBarButton*   _pLangBarButton;
     CLangBarPunctButton* _pLangBarPunctButton;  // 中文/英文标点切换按钮
     CLangBarWidthButton* _pLangBarWidthButton;  // 全角/半角切换按钮
+    CLangBarVariantButton* _pLangBarVariantButton; // 简体/繁体切换按钮
     CStatusBar*       _pStatusBar;
 
     ImeInputMode    _mode;              // 当前模式
     ImeInputMode    _lastChineseMode;   // 最近的中文模式（普通话/粤语），Shift 切回时用
     ImePunctMode    _punctMode;         // 当前标点模式（中文/英文标点）
     ImeWidthMode    _widthMode;         // 当前字符宽度模式（全角/半角）
+    ImeChineseVariant _chineseVariant;  // 当前中文字形（简体/繁体）
     bool            _shiftPressed;      // Shift 按下后尚未消费其它键
     bool            _keyHandledInSession; // edit session 中是否消费了按键
     int             _pageIndex;         // 候选翻页页号

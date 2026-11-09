@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SEGMENTER_CPP = REPO_ROOT / "MandarinToCantonese" / "PinyinSegmenter.cpp"
+OPENCC_DIR = REPO_ROOT / "tools" / "opencc"
 
 
 def load_syllables():
@@ -33,6 +34,68 @@ def load_syllables():
 
 
 SYLLABLES = load_syllables()
+
+
+class S2TConverter:
+    """简体 -> 繁体转换（OpenCC 的 STCharacters + STPhrases，最长词组优先）。"""
+
+    def __init__(self, directory: Path):
+        self.chars = self._load(directory / "STCharacters.txt")
+        self.phrases = self._load(directory / "STPhrases.txt")
+        self.max_phrase_len = max((len(k) for k in self.phrases), default=1)
+        self.cache = {}
+
+    @staticmethod
+    def _load(path: Path):
+        table = {}
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            key = parts[0]
+            value = parts[1].split(" ")[0]  # 多个写法时取 OpenCC 默认的第一个
+            if key and value:
+                table[key] = value
+        return table
+
+    def convert(self, text: str) -> str:
+        cached = self.cache.get(text)
+        if cached is not None:
+            return cached
+
+        out = []
+        i = 0
+        n = len(text)
+        while i < n:
+            hit = None
+            for length in range(min(self.max_phrase_len, n - i), 0, -1):
+                phrase = text[i:i + length]
+                if phrase in self.phrases:
+                    hit = (length, self.phrases[phrase])
+                    break
+            if hit:
+                out.append(hit[1])
+                i += hit[0]
+            else:
+                out.append(self.chars.get(text[i], text[i]))
+                i += 1
+
+        result = "".join(out)
+        self.cache[text] = result
+        return result
+
+
+try:
+    S2T = S2TConverter(OPENCC_DIR)
+except OSError:
+    S2T = None
+    print(f"警告: 未找到 {OPENCC_DIR}，word_trad 将留空（运行时使用 Windows 逐字兜底映射）")
+
+
+def traditional_of(word: str) -> str:
+    return S2T.convert(word) if S2T else ""
 
 
 def segment(text):
@@ -125,8 +188,10 @@ def parse_yaml(path, source, has_weight):
                 continue
 
             syllables = split_syllables(pinyin_raw.decode("utf-8"), key)
+            word_text = word.decode("utf-8")
             entries.append((
-                word.decode("utf-8"),
+                word_text,
+                traditional_of(word_text),
                 key,
                 "".join(initial_of(s) for s in syllables),
                 bytes(len(s) for s in syllables),
@@ -152,6 +217,7 @@ def build(db_path, sources):
         CREATE TABLE entries (
             id           INTEGER PRIMARY KEY,
             word         TEXT    NOT NULL,
+            word_trad    TEXT    NOT NULL DEFAULT '',
             pinyin       TEXT    NOT NULL,
             initials     TEXT    NOT NULL,
             syl_lens     BLOB    NOT NULL,
@@ -161,7 +227,7 @@ def build(db_path, sources):
             valid_pinyin INTEGER NOT NULL
         );
         CREATE INDEX entries_pinyin_idx ON entries (pinyin);
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 2;
         """
     )
 
@@ -169,8 +235,8 @@ def build(db_path, sources):
     for path, source, has_weight in sources:
         rows = parse_yaml(path, source, has_weight)
         con.executemany(
-            "INSERT INTO entries (word, pinyin, initials, syl_lens, weight, source,"
-            " nasal_only, valid_pinyin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO entries (word, word_trad, pinyin, initials, syl_lens, weight, source,"
+            " nasal_only, valid_pinyin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         total += len(rows)

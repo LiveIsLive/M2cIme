@@ -80,6 +80,12 @@ void CCandidateWindow::_Hide()
     _hoverIndex = -1;
 }
 
+const WCHAR* CCandidateWindow::_SourceTag() const
+{
+    return (_pService && _pService->GetChineseVariant() == IME_VARIANT_TRADITIONAL)
+               ? L"粵" : L"粤";
+}
+
 void CCandidateWindow::_RecalcLayout()
 {
     _EnsureWindow();
@@ -92,8 +98,10 @@ void CCandidateWindow::_RecalcLayout()
     WCHAR line[80];
     for (size_t i = 0; i < _items.size(); ++i)
     {
-        swprintf_s(line, L"%d. %s%s", (int)i + 1, _items[i].first.c_str(),
-                   _items[i].second == 1 ? L"  粤" : L"");
+        if (_items[i].second == 1)
+            swprintf_s(line, L"%d. %s  %s", (int)i + 1, _items[i].first.c_str(), _SourceTag());
+        else
+            swprintf_s(line, L"%d. %s", (int)i + 1, _items[i].first.c_str());
         SIZE sz = {};
         GetTextExtentPoint32W(hdc, line, (int)wcslen(line), &sz);
         if (sz.cx + kPadding * 2 > maxW) maxW = sz.cx + kPadding * 2;
@@ -242,7 +250,7 @@ LRESULT CCandidateWindow::_OnPaint()
             RECT rcTag = rcText;
             rcTag.left = rcText.right - 28;
             SetTextColor(memDC, fHighlight ? kColHiText : kColSourceTag);
-            DrawTextW(memDC, L"粤", 1, &rcTag, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(memDC, _SourceTag(), 1, &rcTag, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
             (void)w;
         }
     }

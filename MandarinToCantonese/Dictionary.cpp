@@ -426,12 +426,21 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
         return false;
     }
 
+    // 新词库带 word_trad 列（OpenCC 预生成的繁体写法）；
+    // 兼容旧词库：没有该列时按简体原样加载，运行时再走 Windows 兜底映射。
+    sqlite3_stmt* probe = nullptr;
+    const bool hasTrad =
+        sqlite3_prepare_v2(db, "SELECT word_trad FROM entries LIMIT 1", -1, &probe, nullptr) == SQLITE_OK;
+    if (probe) sqlite3_finalize(probe);
+
     // id 即导入顺序（普通话在前、粤语在后），
     // 按它读入可保持与原文本词库一致的同权重排序。
     sqlite3_stmt* stmt = nullptr;
-    const char* sql =
-        "SELECT word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
-        " FROM entries ORDER BY id";
+    const char* sql = hasTrad
+        ? "SELECT word, word_trad, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
+          " FROM entries ORDER BY id"
+        : "SELECT word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
+          " FROM entries ORDER BY id";
 
     size_t added = 0;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
@@ -440,29 +449,46 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
 
         while (sqlite3_step(stmt) == SQLITE_ROW)
         {
-            const unsigned char* word8 = sqlite3_column_text(stmt, 0);
-            const unsigned char* pinyin8 = sqlite3_column_text(stmt, 1);
-            const unsigned char* initials8 = sqlite3_column_text(stmt, 2);
-            if (!word8 || !pinyin8 || !initials8) continue;
+            int col = 0;
+            const unsigned char* word8 = sqlite3_column_text(stmt, col++);
+            if (!word8) continue;
+
+            std::wstring wordTrad;
+            if (hasTrad)
+            {
+                const unsigned char* trad8 = sqlite3_column_text(stmt, col++);
+                if (trad8)
+                    wordTrad = Utf8ToWide(reinterpret_cast<const char*>(trad8));
+            }
+
+            const unsigned char* pinyin8 = sqlite3_column_text(stmt, col++);
+            const unsigned char* initials8 = sqlite3_column_text(stmt, col++);
+            if (!pinyin8 || !initials8) continue;
 
             std::wstring word = Utf8ToWide(reinterpret_cast<const char*>(word8));
             if (word.empty()) continue;
 
-            const void* blob = sqlite3_column_blob(stmt, 3);
-            const int blobLen = sqlite3_column_bytes(stmt, 3);
+            const void* blob = sqlite3_column_blob(stmt, col++);
+            const int blobLen = sqlite3_column_bytes(stmt, col - 1);
             std::string sylLens;
             if (blob && blobLen > 0)
                 sylLens.assign(static_cast<const char*>(blob), (size_t)blobLen);
 
+            const int weight = sqlite3_column_int(stmt, col++);
+            const int source = sqlite3_column_int(stmt, col++);
+            const int nasalOnly = sqlite3_column_int(stmt, col++);
+            const int validPinyin = sqlite3_column_int(stmt, col++);
+
             entries_.push_back({
                 std::move(word),
+                std::move(wordTrad),
                 reinterpret_cast<const char*>(pinyin8),
                 reinterpret_cast<const char*>(initials8),
                 std::move(sylLens),
-                sqlite3_column_int(stmt, 4),
-                (sqlite3_column_int(stmt, 5) == 1) ? LangSource::Cantonese : LangSource::Mandarin,
-                sqlite3_column_int(stmt, 6) != 0,
-                sqlite3_column_int(stmt, 7) != 0
+                weight,
+                (source == 1) ? LangSource::Cantonese : LangSource::Mandarin,
+                nasalOnly != 0,
+                validPinyin != 0
             });
             ++added;
         }
@@ -477,8 +503,9 @@ void Dictionary::AddEntry(const std::wstring& word, const std::string& pinyin,
                           int weight, LangSource source)
 {
     const auto syllables = SplitSyllables(pinyin, pinyin);
-    entries_.push_back({ word, pinyin, BuildInitials(syllables), EncodeSyllableLengths(syllables),
-                         weight, source, IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
+    entries_.push_back({ word, std::wstring(), pinyin, BuildInitials(syllables),
+                         EncodeSyllableLengths(syllables), weight, source,
+                         IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
 }
 
 std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode,

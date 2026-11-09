@@ -11,6 +11,7 @@ namespace
     // ===== 全局引擎状态 =====
     ImeInputMode g_mode = IME_MODE_MANDARIN;
     ImePunctMode g_punctMode = IME_PUNCT_HALFWIDTH;  // 默认半角标点
+    ImeChineseVariant g_chineseVariant = IME_VARIANT_SIMPLIFIED;  // 默认简体中文
 
     std::string          g_composition;     // 当前拼音串（小写）
     std::vector<DictEntry> g_candidates;    // 当前候选词列表
@@ -23,6 +24,28 @@ namespace
         if (g_initialized) return;
         Dictionary::Instance().EnsureLoaded();
         g_initialized = true;
+    }
+
+    // 旧词库没有 word_trad 列时的兜底：调用 Windows 内置的繁简映射。
+    // 这只是逐字映射（不能处理「头发 -> 頭髮」这类词组分化），
+    // 正常安装的 dicts\m2c_dict.db 已包含由 OpenCC 预生成的 word_trad，
+    // 不会走到这里。
+    std::wstring TraditionalFallback(const std::wstring& text)
+    {
+        if (text.empty()) return text;
+
+        int n = LCMapStringEx(L"zh-TW", LCMAP_TRADITIONAL_CHINESE,
+                              text.c_str(), (int)text.size(),
+                              nullptr, 0, nullptr, nullptr, 0);
+        if (n <= 0) return text;
+
+        std::wstring out((size_t)n, L'\0');
+        int written = LCMapStringEx(L"zh-TW", LCMAP_TRADITIONAL_CHINESE,
+                                    text.c_str(), (int)text.size(),
+                                    &out[0], n, nullptr, nullptr, 0);
+        if (written <= 0) return text;
+        out.resize((size_t)written);
+        return out;
     }
 
     // 根据当前组合串重新生成候选词
@@ -42,6 +65,13 @@ namespace
 
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
         g_candidates = Dictionary::Instance().GetCandidates(purePinyin, mode, purePinyin);
+
+        // 繁体模式：候选直接显示繁体，选中后上屏的也是繁体
+        if (g_chineseVariant == IME_VARIANT_TRADITIONAL)
+        {
+            for (DictEntry& e : g_candidates)
+                e.word = e.wordTrad.empty() ? TraditionalFallback(e.word) : e.wordTrad;
+        }
     }
 
     // 从组合串里消耗 nLetters 个字母字符（跳过标点、数字等）
@@ -157,6 +187,22 @@ void IME_SetWidthMode(ImeWidthMode mode)
 ImeWidthMode IME_GetWidthMode()
 {
     return g_widthMode;
+}
+
+void IME_SetChineseVariant(ImeChineseVariant variant)
+{
+    if (g_chineseVariant == variant) return;
+
+    g_chineseVariant = variant;
+
+    // 正在拼写时立即按新字形刷新候选（不打断组合串）
+    if (!g_composition.empty())
+        RefreshCandidates();
+}
+
+ImeChineseVariant IME_GetChineseVariant()
+{
+    return g_chineseVariant;
 }
 
 // ASCII → 全角字符：空格转 U+3000，可打印字符(0x21-0x7E) 加 0xFEE0

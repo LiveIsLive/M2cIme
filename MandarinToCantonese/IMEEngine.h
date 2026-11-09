@@ -27,6 +27,13 @@ typedef enum ImeWidthMode
     IME_WIDTH_FULLWIDTH = 1,  // 全角
 } ImeWidthMode;
 
+// 中文字形（简体 / 繁体）—— 只影响汉字候选与上屏文本，不影响拼音输入
+typedef enum ImeChineseVariant
+{
+    IME_VARIANT_SIMPLIFIED  = 0,  // 简体中文
+    IME_VARIANT_TRADITIONAL = 1,  // 繁体中文
+} ImeChineseVariant;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +53,11 @@ __declspec(dllexport) ImePunctMode IME_GetPunctMode();
 // 切换 / 查询字符宽度模式（全角/半角）
 __declspec(dllexport) void IME_SetWidthMode(ImeWidthMode mode);
 __declspec(dllexport) ImeWidthMode IME_GetWidthMode();
+
+// 切换 / 查询中文字形（简体/繁体）
+// 切换后会立即把当前候选词转换为对应字形；切换输入模式不会重置该状态。
+__declspec(dllexport) void IME_SetChineseVariant(ImeChineseVariant variant);
+__declspec(dllexport) ImeChineseVariant IME_GetChineseVariant();
 
 // 按当前宽度模式转换一个 ASCII 字符：全角时返回对应全角字符，否则原样返回
 // 空格 → 全角空格(U+3000)，可打印 ASCII(0x21-0x7E) → +0xFEE0

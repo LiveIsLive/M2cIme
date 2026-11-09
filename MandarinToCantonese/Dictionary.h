@@ -14,7 +14,8 @@ enum class LangSource
 // 词典条目
 struct DictEntry
 {
-    std::wstring word;     // 汉字
+    std::wstring word;     // 汉字（简体，或词库原始写法）
+    std::wstring wordTrad; // 对应的繁体写法（词库中预生成；旧词库可能为空）
     std::string  pinyin;   // 连续拼音（小写，无声调，如 "nihao"）
     std::string  initials; // 各音节声母拼接（如 "nihao" -> "nh"）
     std::string  sylLens;  // 各音节长度（每字节一个音节长度，"nihao" -> {2,3}），用于混拼匹配
