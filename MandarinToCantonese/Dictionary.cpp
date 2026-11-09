@@ -4,6 +4,7 @@
 #include "third_party/sqlite/sqlite3.h"
 
 #include <algorithm>
+#include <cstring>
 #include <set>
 #include <string>
 #include <utility>
@@ -134,6 +135,111 @@ namespace
             if ((c0 == 'z' || c0 == 'c' || c0 == 's') && c1 == 'h') return 2;
         }
         return 1;
+    }
+
+    // 是否声母字母（不含 a/e/i/o/u 等韵母字母；v 仅作 ü 的输入替代，不作为声母）
+    bool IsInitialLetter(char c)
+    {
+        static const char kInitialLetters[] = "bpmfdtnlgkhjqxzcsryw";
+        return std::strchr(kInitialLetters, c) != nullptr;
+    }
+
+    // 按「候选词生成规则」把输入切分为「独立声母 / 完整拼音音节」，并尝试与词条逐音节对应：
+    //   - 独立声母：单个辅音字母，对应下一个汉字的声母（zh/ch/sh 可只写 z/c/s）；
+    //     也可写完整 zh/ch/sh（两个字符合成一个声母）。
+    //   - 完整拼音音节：必须与下一个汉字的拼音完全相同（不能只写一部分）。
+    // 词条所有音节都能匹配时，返回本次匹配实际消耗的输入字母数（即覆盖长度）；
+    // 否则返回 0。多个切分方式都能匹配时取消耗最长的一种（便于按覆盖长度排序）。
+    //
+    // 例：nmzshuoshenme
+    //   可切为  n m z shuo shen me  （声母 nmz + 完整拼音 shuoshenme）
+    //   也可切为 n m z s huo shen me（声母 nmzs + 完整拼音 huoshenme）
+    // 返回值即最后一个音节结束的位置。
+    size_t RuleConsume(const DictEntry& e, const std::string& input)
+    {
+        if (e.sylLens.empty() || input.empty()) return 0;
+
+        // 组合串不会太长；超出上限时不做规则匹配（避免栈上定长数组越界）
+        constexpr size_t kMaxInput = 127;
+        if (input.size() > kMaxInput) return 0;
+
+        char cur[kMaxInput + 1] = {};
+        char nxt[kMaxInput + 1] = {};
+        cur[0] = 1;
+
+        size_t off = 0;
+        for (size_t i = 0; i < e.sylLens.size(); ++i)
+        {
+            const size_t len = (size_t)(unsigned char)e.sylLens[i];
+            if (len == 0 || off + len > e.pinyin.size()) return 0;
+
+            std::memset(nxt, 0, input.size() + 1);
+            bool any = false;
+
+            for (size_t pos = 0; pos < input.size(); ++pos)
+            {
+                if (!cur[pos]) continue;
+
+                // 1) 完整拼音音节
+                if (pos + len <= input.size() &&
+                    input.compare(pos, len, e.pinyin, off, len) == 0)
+                {
+                    nxt[pos + len] = 1;
+                    any = true;
+                }
+
+                // 2) 单字母声母（zh/ch/sh 用 z/c/s 简写）。
+                //    零声母音节（如 an / er / ai）没有辅音声母，沿用词库 initials 的约定，
+                //    用音节首字母（a/e/o）代表该音节，便于与 QueryOnce 的声母简拼保持一致。
+                const char c = input[pos];
+                if (c == e.pinyin[off] &&
+                    (IsInitialLetter(c) || !IsInitialLetter(e.pinyin[off])))
+                {
+                    nxt[pos + 1] = 1;
+                    any = true;
+                }
+
+                // 3) 完整声母 zh/ch/sh（两个字符合成一个声母）。
+                //    仅当它位于输入末尾或后面紧跟声母时才算“独立声母”；
+                //    若后面跟的是韵母（如 shuo 的 uo），它应作为完整音节的一部分。
+                if (pos + 1 < input.size())
+                {
+                    const char c0 = input[pos];
+                    const char c1 = input[pos + 1];
+                    const bool atEnd = (pos + 2 == input.size());
+                    const bool nextIsInitial = atEnd || IsInitialLetter(input[pos + 2]);
+                    if (nextIsInitial &&
+                        (c0 == 'z' || c0 == 'c' || c0 == 's') && c1 == 'h' &&
+                        off + 1 < e.pinyin.size() &&
+                        e.pinyin[off] == c0 && e.pinyin[off + 1] == 'h')
+                    {
+                        nxt[pos + 2] = 1;
+                        any = true;
+                    }
+                }
+            }
+
+            if (!any) return 0;
+            std::memcpy(cur, nxt, input.size() + 1);
+            off += len;
+        }
+
+        // 所有音节都匹配成功，取最远的结束位置作为覆盖长度
+        for (size_t p = input.size(); p >= 1; --p)
+            if (cur[p]) return p;
+        return 0;
+    }
+
+    // 按输入模式给词条加权（普通话音库与粤语词库的隔离规则）。
+    long long ModeScore(const DictEntry& e, int mode)
+    {
+        // kBoost 必须大于任何词条权重（外置普通话词库权重可达数百万）。
+        const long long kBoost = 1000000000000LL; // 1e12
+        const long long w = e.weight;
+        if (mode == 1) // 粤语模式
+            return (e.source == LangSource::Cantonese) ? (w + kBoost) : w;
+        else            // 普通话模式
+            return (e.source == LangSource::Mandarin) ? (w + kBoost) : (w - kBoost);
     }
 
     // 声母简拼匹配结果：
@@ -477,18 +583,23 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
             rank = 3;   // 混拼前缀（还在输入中，如 nha → 你好）
         }
 
-        // 本次实际覆盖到的词条拼音字符数：
+        // 本次实际覆盖到的输入字母数：
         //  - pinyinMatch 时 = min(plen, elen)
         //  - mixedFull    时 = plen   （输入串刚好覆盖所有音节，算完整）
-        //  - mixedPartial 时 = plen   （尾部仍在输入中，已覆盖全部已匹配音节）
-        //  - initialsMatch 时 = 0    （声母简拼不直接对应拼音字符长度，不用于"更长完整匹配"）
+        //  - initialsFull 时 = 规则匹配实际消耗的字母数（如 nh→2、sms→3）
+        // 其余情况为 0，不参与"更长完整匹配"排序。
         size_t matchedLen = 0;
         if (mixedFull)         matchedLen = plen;
         else if (pinyinMatch)  matchedLen = (std::min)(plen, elen);
+        else if (initialsFull) matchedLen = RuleConsume(e, initialsQuery);
 
         result.push_back(e);
         DictEntry& added = result.back();
         added.viaInitials = (initialsMatch || mixedFull || mixedPartial);
+        // 词条每个音节是否都被输入完整匹配：
+        //  - 全拼完整 / 声母完整 / 混拼完整都算完整匹配；
+        //  - 词条比输入长（还在输入该词）不算完整匹配。
+        added.fullWordMatch = (mixedFull || initialsFull || (pinyinMatch && elen <= plen));
         added.matchRank = rank;
         added.matchedLen = matchedLen;
     }
@@ -496,27 +607,7 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
     // ===== 基于模式的优先级排序 =====
     // mode == 0 : 普通话模式 —— 粤语词条强制排到最后
     // mode == 1 : 粤语模式   —— 粤语词条强制排到最前
-    //
-    // 实现：给每条候选计算一个调整分 score。
-    //  - 粤语模式：Cantonese 的 score = weight + kBoost；Mandarin = weight
-    //  - 普通话模式：Mandarin 的 score = weight + kBoost；Cantonese = weight - kBoost
-    // 这样同一来源内部仍按词频排序，不同来源之间严格隔离。
-    // 注意：kBoost 必须大于任何词条权重（外置普通话词库权重可达数百万）。
-    const long long kBoost = 1000000000000LL; // 1e12
-
-    auto scoreOf = [&](const DictEntry& e) -> long long
-    {
-        const long long w = e.weight;
-        if (mode == 1) // 粤语模式
-        {
-            return (e.source == LangSource::Cantonese) ? (w + kBoost) : w;
-        }
-        else // 普通话模式
-        {
-            return (e.source == LangSource::Mandarin) ? (w + kBoost) : (w - kBoost);
-        }
-    };
-
+    // 具体权重调整见 ModeScore（同一来源内部仍按词频排序）。
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
@@ -536,8 +627,8 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
             //  - 输入 nihao  时「你好吗」matchedLen=4 = 「你好」matchedLen=4 → 走后续词频比较
             if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
 
-            long long sa = scoreOf(a);
-            long long sb = scoreOf(b);
+            long long sa = ModeScore(a, mode);
+            long long sb = ModeScore(b, mode);
             if (sa != sb) return sa > sb;
             // 同分同匹配长度下，拼音更短（更精确）的优先
             if (a.pinyin.size() != b.pinyin.size())
@@ -549,15 +640,17 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
     // 例如输入 suoyou（s + y 两个声母）时只保留 2 字以内的词，
     // 不再列出「所有人」「所有作品」这类靠前缀补全混进来的更长词；
     // 纯声母输入（jx、ryjx）同样按声母个数（字母数）限制，排除「教学活动」「集线器」。
-    // 仅裁掉拼音比输入更长的“补全”词：拼音与输入等长的属于精确匹配，
-    // 不受 xian（先 / 西安）这类切分歧义影响。
+    // 仅裁掉“还没输完的补全词”（词条音节没有全部被输入匹配），
+    // 已经完整匹配的词条（如 dershijiu → 第二十九）不受此限制。
     const size_t inputInitials = CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery);
     if (inputInitials >= 2)
     {
         result.erase(std::remove_if(result.begin(), result.end(),
             [inputInitials, plen](const DictEntry& e)
             {
-                return e.pinyin.size() > plen && e.word.size() > inputInitials;
+                return !e.fullWordMatch &&
+                       e.pinyin.size() > plen &&
+                       e.word.size() > inputInitials;
             }),
             result.end());
     }
@@ -571,9 +664,8 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     std::vector<DictEntry> result = QueryOnce(pinyin, mode, initialsQuery);
     if (initialsQuery.size() < 2) return result;
 
-    // 整串匹配不到任何词组时逐级回退（如输入 ryjx 想打「如意吉祥」但词库未收录）：
-    // 依次列出 ryj 命中的词组、ry 命中的词组，最后是 r 声母对应的单字，
-    // 让用户仍能逐段把整词选出来。
+    // 整串已命中词组：直接返回。纯声母输入（如 jx）再补上首字母声母对应的单字
+    // （j 开头的字），让用户既能选词也能选字。
     const bool hasWordGroup = std::any_of(result.begin(), result.end(),
         [](const DictEntry& e) { return e.word.size() >= 2; });
 
@@ -598,30 +690,54 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
         return result;
     }
 
-    result.clear();
-    std::set<std::pair<std::wstring, int>> seen;  // 长前缀层已列出的词不再在短前缀层重复
+    // 整串匹配不到任何词组时，按「候选词生成规则」回退：
+    // 对每条词条，用「独立声母 / 完整拼音音节」的方式匹配输入的前缀，
+    // 能完整匹配词条所有音节的最长前缀长度就是该词条的“覆盖长度”。
+    // 然后按覆盖长度由长到短排列（用户可先选覆盖更长、更确定的词），
+    // 同覆盖长度再按来源/词频排序。
+    //
+    // 例：nmzshuoshenme（词库未收录整句时）
+    //   农民增收 覆盖 nmzsh（4 个声母）> 南美洲 / 柠檬汁 覆盖 nmz > 你们 覆盖 nm。
+    const std::string& input = initialsQuery.empty() ? pinyin : initialsQuery;
 
-    auto appendLayer = [&](size_t prefixLen, bool wordGroup)
+    std::vector<DictEntry> all;
+    for (const auto& e : entries_)
     {
-        const std::string prefix = initialsQuery.substr(0, prefixLen);
-        for (DictEntry& e : QueryOnce(prefix, mode, prefix))
-        {
-            // 词组层只留多字词，单字层只留单字
-            if ((e.word.size() >= 2) != wordGroup) continue;
-            if (!seen.emplace(e.word, (int)e.source).second) continue;
-            // 简拼 / 混拼命中的词组只消耗匹配上的那段输入（如 ryjx 选「如意」只消耗 ry，
-            // 剩余 jx 留在组合串里继续选「吉祥」）；拼音命中的沿用公共前缀消耗，无需标记。
-            if (e.viaInitials)
-                e.consumeInputLen = prefixLen;
-            result.push_back(std::move(e));
-        }
-    };
+        const size_t covered = RuleConsume(e, input);
+        if (covered == 0) continue;
 
-    // 词组层：前 n-1 字母、前 n-2 字母……直到前 2 字母
-    for (size_t len = initialsQuery.size() - 1; len >= 2; --len)
-        appendLayer(len, true);
-    // 单字层：首字母声母对应的单字
-    appendLayer(1, false);
+        // 词组层至少覆盖 2 个字母；单字层只要声母/拼音能匹配到即可。
+        if (e.word.size() >= 2 && covered < 2) continue;
+
+        DictEntry added = e;
+        added.viaInitials = true;
+        added.fullWordMatch = true;
+        added.matchedLen = covered;
+        added.consumeInputLen = covered;   // 选中后只消耗规则匹配到的这段输入
+        all.push_back(std::move(added));
+    }
+
+    std::stable_sort(all.begin(), all.end(),
+        [&](const DictEntry& a, const DictEntry& b)
+        {
+            // 1) 覆盖输入长度由长到短
+            if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
+            // 2) 同覆盖长度按当前模式的来源/词频优先级
+            const long long sa = ModeScore(a, mode);
+            const long long sb = ModeScore(b, mode);
+            if (sa != sb) return sa > sb;
+            return a.weight > b.weight;
+        });
+
+    // 同一词条可能在多个切分方式下都能匹配，按排序后的顺序去重，保留覆盖最长的。
+    result.clear();
+    std::set<std::pair<std::wstring, int>> seen;
+    result.reserve(all.size());
+    for (DictEntry& e : all)
+    {
+        if (!seen.emplace(e.word, (int)e.source).second) continue;
+        result.push_back(std::move(e));
+    }
 
     return result;
 }

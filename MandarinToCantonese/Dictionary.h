@@ -23,9 +23,10 @@ struct DictEntry
     bool         nasalOnly = false;   // 首音节是鼻音自成音节（n/ng/m/hm/hng，如「嗯」「呒」），没有真正声母
     bool         validPinyin = true;  // 拼音能否完整切分为合法音节（"nihao"=ni+hao 为 true；"n" 为 false）
     bool         viaInitials = false; // 查询结果标记：是否靠声母简拼 / 混拼匹配（词库本身不使用）
+    bool         fullWordMatch = false; // 查询结果标记：词条所有音节是否都被输入完整匹配（词库本身不使用）
     int          matchRank = 0;       // 查询结果标记：匹配优先级（越小越靠前，词库本身不使用）
-    size_t       matchedLen = 0;      // 查询结果标记：本次实际覆盖到的词条拼音长度（用于更长完整匹配优先）
-    size_t       consumeInputLen = 0; // 查询结果标记：选中后消耗组合串的字符数（逐级回退候选专用，0 = 按默认规则消耗）
+    size_t       matchedLen = 0;      // 查询结果标记：本次实际覆盖的输入字母数（用于更长覆盖优先）
+    size_t       consumeInputLen = 0; // 查询结果标记：选中后消耗组合串的字符数（回退候选专用，0 = 按默认规则消耗）
 };
 
 // 词典：从外置 SQLite 词库文件加载普通话 + 粤语词条，
@@ -52,9 +53,11 @@ public:
     //   留空则不启用简拼 / 混拼匹配。
     // 返回按优先级排序后的候选列表。
     //
-    // 逐级回退：整串匹配不到任何词组时（如输入 ryjx 想打「如意吉祥」但词库未收录），
-    // 依次列出 前 n-1 字母命中的词组、前 n-2 字母命中的词组 …… 最后是首字母声母对应的
-    // 单字（如 ryj 词组 → ry 词组 → r 单字），长前缀层已出现的词不会在短前缀层重复。
+    // 回退：整串匹配不到任何词组时（如输入 nmzshuoshenme 但词库未收录整句），
+    // 按「候选词生成规则」把输入切分为「独立声母 / 完整拼音音节」，
+    // 列出所有能完整匹配的词条，并按覆盖的输入字母数由长到短排列
+    // （如 农民增收 覆盖 nmzs > 南美洲 / 柠檬汁 覆盖 nmz > 你们 覆盖 nm）。
+    // 选中某个回退候选时只消耗它实际匹配到的输入字母，剩余部分继续出候选。
     std::vector<DictEntry> GetCandidates(const std::string& pinyin, int mode,
                                          const std::string& initialsQuery = std::string()) const;
 
