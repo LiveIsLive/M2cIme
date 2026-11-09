@@ -20,9 +20,17 @@ public:
 private:
     static LRESULT CALLBACK _WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT _OnPaint();
-    void _OnLButtonUp(LPARAM lParam);  // lParam 含鼠标坐标
+    void _OnLButtonDown(LPARAM lParam);  // 开始可能的拖动
+    void _OnLButtonUp(LPARAM lParam);    // 拖动结束或执行点击动作
+    void _OnMouseMove(WPARAM wParam, LPARAM lParam);
+    void _OnDragTimer();                 // 轮询鼠标位置，兼容 SetCapture 失效的情况
+    void _FinishDrag(bool suppressClick); // 保存拖动结果
+    void _CancelDrag();                  // 放弃本次拖动（窗口隐藏等）
     void _EnsureWindow();
     void _Reposition();
+    void _ClampToWorkArea(int& x, int& y) const;  // 保证状态条完整落在显示器工作区内
+    void _LoadSavedPosition();                    // 读取用户拖动后保存的位置
+    void _SavePosition(int x, int y);
     void _EnsureTooltip();
     void _UpdateTooltipText();
     void _RelayMouseToTooltip(UINT msg, WPARAM wParam, LPARAM lParam);
@@ -37,6 +45,17 @@ private:
     HFONT _fontWidth;
     HFONT _fontVariant;
     bool _hover;
+
+    // 拖动移动状态条
+    bool _dragging;        // 左键按下后进入拖动跟踪
+    bool _dragMoved;       // 移动超过系统拖动阈值，本次不再当作点击
+    bool _suppressClick;   // 拖动已由定时器结束，忽略随后到达的 WM_LBUTTONUP
+    POINT _dragStart;      // 按下时的屏幕坐标
+    POINT _dragOrigin;     // 按下时的窗口左上角（屏幕坐标）
+    bool _hasCustomPos;    // 是否已有用户拖动保存的位置
+    int _posX;
+    int _posY;
+
     WCHAR _tipMode[16];    // 模式区悬停提示（当前模式名）
     WCHAR _tipPunct[16];   // 中文/英文标点区悬停提示（当前状态）
     WCHAR _tipWidth[16];   // 全角/半角区悬停提示（当前状态）

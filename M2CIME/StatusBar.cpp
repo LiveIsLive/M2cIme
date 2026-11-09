@@ -7,6 +7,15 @@
 
 static const WCHAR* kStatusClass = L"M2CStatusBar";
 
+// 状态条位置持久化（与模式等设置放在同一个注册表键下）
+static const WCHAR* kRegKey  = L"Software\\M2CIME";
+static const WCHAR* kRegPosX = L"StatusBarX";
+static const WCHAR* kRegPosY = L"StatusBarY";
+
+// 拖动轮询定时器（SetCapture 在非激活窗口上可能不可靠，用定时器兜底）
+static const UINT_PTR kDragTimerId = 1;
+static const UINT kDragTimerMs = 15;
+
 static const COLORREF kBg        = RGB(252, 252, 252);
 static const COLORREF kBorder    = RGB(206, 206, 206);
 static const COLORREF kBgHover   = RGB(240, 246, 253);
@@ -17,6 +26,9 @@ static const COLORREF kArrow     = RGB(140, 140, 140);
 CStatusBar::CStatusBar(CTextService* pService)
     : _pService(pService), _hwnd(nullptr), _hwndTip(nullptr), _fontMode(nullptr), _fontArrow(nullptr),
       _fontPunct(nullptr), _fontWidth(nullptr), _fontVariant(nullptr), _hover(false),
+      _dragging(false), _dragMoved(false), _suppressClick(false),
+      _dragStart{}, _dragOrigin{},
+      _hasCustomPos(false), _posX(0), _posY(0),
       _tipMode{}, _tipPunct{}, _tipWidth{}, _tipVariant{}
 {
 }
@@ -184,29 +196,108 @@ void CStatusBar::_Reposition()
 {
     if (!_hwnd) return;
 
-    // 停靠在主屏工作区右下角（任务栏之上）
-    HMONITOR hMon = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    GetMonitorInfoW(hMon, &mi);
+    int x = 0;
+    int y = 0;
+    if (_hasCustomPos)
+    {
+        // 使用用户拖动后的位置；显示器分辨率/布局变化后自动拉回可见区域
+        x = _posX;
+        y = _posY;
+        _ClampToWorkArea(x, y);
+        _posX = x;
+        _posY = y;
+    }
+    else
+    {
+        // 默认停靠在主屏工作区右下角（任务栏之上）
+        HMONITOR hMon = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(hMon, &mi);
 
-    int x = mi.rcWork.right - kWidth - 6;
-    int y = mi.rcWork.bottom - kHeight - 6;
+        x = mi.rcWork.right - kWidth - 6;
+        y = mi.rcWork.bottom - kHeight - 6;
+    }
 
     SetWindowPos(_hwnd, HWND_TOPMOST, x, y, kWidth, kHeight, SWP_NOACTIVATE);
+}
+
+// 把状态条限制在离它最近的显示器工作区内，避免拖到屏幕外后找不回来
+void CStatusBar::_ClampToWorkArea(int& x, int& y) const
+{
+    RECT rc = { x, y, x + kWidth, y + kHeight };
+    HMONITOR hMon = MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(hMon, &mi))
+        return;
+
+    const RECT& work = mi.rcWork;
+    if (x + kWidth > work.right)  x = work.right - kWidth;
+    if (y + kHeight > work.bottom) y = work.bottom - kHeight;
+    if (x < work.left)            x = work.left;
+    if (y < work.top)             y = work.top;
+}
+
+void CStatusBar::_LoadSavedPosition()
+{
+    _hasCustomPos = false;
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD type = 0, size = sizeof(DWORD);
+        DWORD x = 0, y = 0;
+        if (RegQueryValueExW(hKey, kRegPosX, nullptr, &type, (BYTE*)&x, &size) == ERROR_SUCCESS
+            && type == REG_DWORD && size == sizeof(DWORD))
+        {
+            size = sizeof(DWORD);
+            if (RegQueryValueExW(hKey, kRegPosY, nullptr, &type, (BYTE*)&y, &size) == ERROR_SUCCESS
+                && type == REG_DWORD && size == sizeof(DWORD))
+            {
+                _posX = (int)(LONG)x;
+                _posY = (int)(LONG)y;
+                _hasCustomPos = true;
+            }
+        }
+        RegCloseKey(hKey);
+    }
+
+    if (_hasCustomPos)
+        _ClampToWorkArea(_posX, _posY);
+}
+
+void CStatusBar::_SavePosition(int x, int y)
+{
+    HKEY hKey = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegKey, 0, nullptr,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+    {
+        DWORD v = (DWORD)x;
+        RegSetValueExW(hKey, kRegPosX, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+        v = (DWORD)y;
+        RegSetValueExW(hKey, kRegPosY, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+        RegCloseKey(hKey);
+    }
 }
 
 void CStatusBar::_Show()
 {
     _EnsureWindow();
     if (!_hwnd) return;
-    _Reposition();
+    if (!_dragging)
+    {
+        _LoadSavedPosition();   // 兼容其它应用里的状态条实例刚拖动过的情况
+        _Reposition();
+    }
     ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
     InvalidateRect(_hwnd, nullptr, FALSE);
 }
 
 void CStatusBar::_Hide()
 {
+    if (_dragging)
+        _CancelDrag();
     if (_hwnd && IsWindowVisible(_hwnd))
         ShowWindow(_hwnd, SW_HIDE);
 }
@@ -342,8 +433,187 @@ LRESULT CStatusBar::_OnPaint()
     return 0;
 }
 
+void CStatusBar::_OnLButtonDown(LPARAM lParam)
+{
+    if (!_hwnd) return;
+
+    _dragging = true;
+    _dragMoved = false;
+    _suppressClick = false;
+    GetCursorPos(&_dragStart);
+
+    RECT rc = {};
+    GetWindowRect(_hwnd, &rc);
+    _dragOrigin.x = rc.left;
+    _dragOrigin.y = rc.top;
+
+    SetCapture(_hwnd);
+    SetTimer(_hwnd, kDragTimerId, kDragTimerMs, nullptr);
+
+    // 拖动时先收起分区提示，避免提示窗跟着乱跑
+    if (_hwndTip)
+        SendMessageW(_hwndTip, TTM_POP, 0, 0);
+
+    UNREFERENCED_PARAMETER(lParam);
+}
+
+// SetCapture 对 WS_EX_NOACTIVATE 窗口不一定能持续收到鼠标消息，
+// 用定时器轮询光标位置和按键状态，保证拖动始终可用。
+void CStatusBar::_OnDragTimer()
+{
+    if (!_hwnd) return;
+    if (!_dragging)
+    {
+        KillTimer(_hwnd, kDragTimerId);
+        return;
+    }
+
+    POINT pt = {};
+    GetCursorPos(&pt);
+    int dx = pt.x - _dragStart.x;
+    int dy = pt.y - _dragStart.y;
+
+    int cxDrag = GetSystemMetrics(SM_CXDRAG);
+    int cyDrag = GetSystemMetrics(SM_CYDRAG);
+    if (!_dragMoved && (dx <= -cxDrag || dx >= cxDrag ||
+                        dy <= -cyDrag || dy >= cyDrag))
+    {
+        _dragMoved = true;
+    }
+
+    if (_dragMoved)
+    {
+        SetWindowPos(_hwnd, HWND_TOPMOST,
+                     _dragOrigin.x + dx, _dragOrigin.y + dy,
+                     0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+    }
+
+    if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+    {
+        bool moved = _dragMoved;
+        _dragging = false;
+        _dragMoved = false;
+        KillTimer(_hwnd, kDragTimerId);
+        if (GetCapture() == _hwnd)
+            ReleaseCapture();
+        if (moved)
+            _FinishDrag(true);
+        // 未移动时保留点击动作，交给随后到达的 WM_LBUTTONUP 处理
+    }
+}
+
+void CStatusBar::_FinishDrag(bool suppressClick)
+{
+    if (!_hwnd) return;
+
+    // 拖动结束：吸附到最近的显示器工作区并持久化位置
+    RECT rc = {};
+    if (GetWindowRect(_hwnd, &rc))
+    {
+        int x = rc.left;
+        int y = rc.top;
+        _ClampToWorkArea(x, y);
+        if (x != rc.left || y != rc.top)
+            SetWindowPos(_hwnd, HWND_TOPMOST, x, y, 0, 0,
+                         SWP_NOSIZE | SWP_NOACTIVATE);
+
+        _posX = x;
+        _posY = y;
+        _hasCustomPos = true;
+        _SavePosition(x, y);
+    }
+
+    if (suppressClick)
+        _suppressClick = true;
+    InvalidateRect(_hwnd, nullptr, FALSE);
+}
+
+void CStatusBar::_CancelDrag()
+{
+    _dragging = false;
+    _dragMoved = false;
+    _suppressClick = false;
+    if (_hwnd)
+    {
+        KillTimer(_hwnd, kDragTimerId);
+        if (GetCapture() == _hwnd)
+            ReleaseCapture();
+    }
+}
+
+void CStatusBar::_OnMouseMove(WPARAM wParam, LPARAM lParam)
+{
+    if (_dragging)
+    {
+        POINT pt = {};
+        GetCursorPos(&pt);
+        int dx = pt.x - _dragStart.x;
+        int dy = pt.y - _dragStart.y;
+
+        // 超过系统拖动阈值才算拖动，否则松手仍按普通点击处理
+        int cxDrag = GetSystemMetrics(SM_CXDRAG);
+        int cyDrag = GetSystemMetrics(SM_CYDRAG);
+        if (!_dragMoved && (dx <= -cxDrag || dx >= cxDrag ||
+                            dy <= -cyDrag || dy >= cyDrag))
+        {
+            _dragMoved = true;
+        }
+
+        if (_dragMoved)
+        {
+            // 拖动过程中不裁剪，方便跨显示器移动；松手时再拉回工作区
+            SetWindowPos(_hwnd, HWND_TOPMOST,
+                         _dragOrigin.x + dx, _dragOrigin.y + dy,
+                         0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+        }
+        return;
+    }
+
+    if (!_hover)
+    {
+        _hover = true;
+        TRACKMOUSEEVENT tme = {};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = _hwnd;
+        TrackMouseEvent(&tme);
+        InvalidateRect(_hwnd, nullptr, FALSE);
+    }
+    // 转发鼠标移动，让提示窗口按所在区域弹出“模式/标点”提示
+    _RelayMouseToTooltip(WM_MOUSEMOVE, wParam, lParam);
+}
+
 void CStatusBar::_OnLButtonUp(LPARAM lParam)
 {
+    if (_suppressClick)
+    {
+        // 拖动已由定时器结束，这次 WM_LBUTTONUP 不能再触发分区动作
+        _suppressClick = false;
+        _dragging = false;
+        _dragMoved = false;
+        if (_hwnd)
+            KillTimer(_hwnd, kDragTimerId);
+        return;
+    }
+
+    bool wasDragging = _dragging;
+    bool moved = _dragMoved;
+    _dragging = false;
+    _dragMoved = false;
+    if (_hwnd)
+        KillTimer(_hwnd, kDragTimerId);
+
+    if (wasDragging)
+        ReleaseCapture();
+
+    if (moved)
+    {
+        _FinishDrag(false);
+        return;   // 拖动后不再触发分区点击动作
+    }
+
     if (!_pService) return;
 
     // 获取点击位置（窗口客户区坐标）
@@ -422,23 +692,34 @@ LRESULT CALLBACK CStatusBar::_WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     {
     case WM_PAINT:
         return pThis->_OnPaint();
+    case WM_LBUTTONDOWN:
+        pThis->_OnLButtonDown(lParam);
+        return 0;
     case WM_LBUTTONUP:
         pThis->_OnLButtonUp(lParam);
         return 0;
     case WM_MOUSEMOVE:
-        if (!pThis->_hover)
-        {
-            pThis->_hover = true;
-            TRACKMOUSEEVENT tme = {};
-            tme.cbSize = sizeof(tme);
-            tme.dwFlags = TME_LEAVE;
-            tme.hwndTrack = hwnd;
-            TrackMouseEvent(&tme);
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        // 转发鼠标移动，让提示窗口按所在区域弹出“模式/标点”提示
-        pThis->_RelayMouseToTooltip(WM_MOUSEMOVE, wParam, lParam);
+        pThis->_OnMouseMove(wParam, lParam);
         return 0;
+    case WM_TIMER:
+        if (wParam == kDragTimerId)
+        {
+            pThis->_OnDragTimer();
+            return 0;
+        }
+        break;
+    case WM_CANCELMODE:
+        if (pThis->_dragging)
+            pThis->_CancelDrag();
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT)
+        {
+            SetCursor(LoadCursor(nullptr,
+                                 (pThis->_dragging && pThis->_dragMoved) ? IDC_SIZEALL : IDC_HAND));
+            return TRUE;
+        }
+        break;
     case WM_MOUSELEAVE:
         pThis->_hover = false;
         if (pThis->_hwndTip)
