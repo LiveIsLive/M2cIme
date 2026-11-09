@@ -1,0 +1,20 @@
+现在以用户输入 nmzshuoshenme 想打出“你们在说什么”为例，说明候选词的生成规则。
+
+首先要把用户输入里面的连续的没有后跟韵母的声母提取出来分组，按这个规则拆分，nmzshuoshenme 可以拆分成 nmz、shuoshenme 或者 nmzs、huoshenme 两个分组。然后按以下规则循环处理
+
+以为 nmz、shuoshenme 这个分组为例，搜索词库里面有没有符合以下规则的词
+第1个字符声母是n
+第2个字符声母是m
+第3个字符声母是z
+然后后面从第4个字符开始是以shuoshenme为结尾的词，注意这里是以shuoshenme为结尾，不是包含shuoshenme
+
+然后把减去最后一个字符，再按上面规则尝试生成候选词叠加，也就是说 使用 nmzshuoshenm 按上面规则可以拆分成nmz、shuoshen、m 或者 nmzs、huoshen、m 两个分组
+
+以为 nmz、shuoshen、m 这个分组为例，先搜索词库里面有没有符合以下规则的词
+第1个字符声母是n
+第2个字符声母是m
+第3个字符声母是z
+第4个字符开始是shuoshenme
+然后紧接着并且最后一个字符声母是m
+
+然后把减去最后一个字符，再按上面规则尝试生成候选词叠加，也就是说 使用 nmzshuoshen 按上面规则……
