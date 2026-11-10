@@ -44,6 +44,7 @@ private:
     HFONT _fontPunct;
     HFONT _fontWidth;
     HFONT _fontVariant;
+    HFONT _fontSettings;
     bool _hover;
 
     // 拖动移动状态条
@@ -60,11 +61,13 @@ private:
     WCHAR _tipPunct[16];   // 中文/英文标点区悬停提示（当前状态）
     WCHAR _tipWidth[16];   // 全角/半角区悬停提示（当前状态）
     WCHAR _tipVariant[16]; // 简体/繁体区悬停提示（当前状态）
+    WCHAR _tipSettings[16];// 设置区悬停提示
 
-    static const int kWidth  = 183;  // 模式 + 全角/半角 + 标点 + 简/繁 + 箭头
+    static const int kWidth  = 221;  // 模式 + 全角/半角 + 标点 + 简/繁 + 设置 + 箭头
     static const int kHeight = 34;
-    static const int kModeRight    = 40;   // 模式区右边界（分隔线位置）
-    static const int kWidthRight   = 79;   // 全角/半角区右边界
-    static const int kPunctRight   = 118;  // 中文/英文标点区右边界
-    static const int kVariantRight = 157;  // 简体/繁体区右边界（右侧为箭头）
+    static const int kModeRight     = 40;   // 模式区右边界（分隔线位置）
+    static const int kWidthRight    = 79;   // 全角/半角区右边界
+    static const int kPunctRight    = 118;  // 中文/英文标点区右边界
+    static const int kVariantRight  = 157;  // 简体/繁体区右边界
+    static const int kSettingsRight = 191;  // 设置区右边界（右侧为箭头）
 };

@@ -34,6 +34,15 @@ typedef enum ImeChineseVariant
     IME_VARIANT_TRADITIONAL = 1,  // 繁体中文
 } ImeChineseVariant;
 
+// 拼音输入方式（全拼 / 双拼）
+// 全拼：输入完整拼音字母，如 nihao
+// 双拼：每个汉字用「声母键 + 韵母键」两键输入，方案采用微软拼音双拼
+typedef enum ImePinyinMode
+{
+    IME_PINYIN_FULL   = 0,  // 全拼
+    IME_PINYIN_DOUBLE = 1,  // 双拼（微软双拼方案）
+} ImePinyinMode;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +67,10 @@ __declspec(dllexport) ImeWidthMode IME_GetWidthMode();
 // 切换后会立即把当前候选词转换为对应字形；切换输入模式不会重置该状态。
 __declspec(dllexport) void IME_SetChineseVariant(ImeChineseVariant variant);
 __declspec(dllexport) ImeChineseVariant IME_GetChineseVariant();
+
+// 切换 / 查询拼音输入方式（全拼 / 双拼）
+__declspec(dllexport) void IME_SetPinyinMode(ImePinyinMode mode);
+__declspec(dllexport) ImePinyinMode IME_GetPinyinMode();
 
 // 按当前宽度模式转换一个 ASCII 字符：全角时返回对应全角字符，否则原样返回
 // 空格 → 全角空格(U+3000)，可打印 ASCII(0x21-0x7E) → +0xFEE0

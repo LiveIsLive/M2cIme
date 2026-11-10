@@ -41,12 +41,18 @@ DEFINE_GUID(GUID_M2CLangBarWidthButton,
 DEFINE_GUID(GUID_M2CLangBarVariantButton,
     0xe9b1a5d7, 0x416f, 0x7e8d, 0x2a, 0x0f, 0xbf, 0x5d, 0x7c, 0x9e, 0x40, 0x68);
 
+// 语言栏设置按钮 GUID（打开设置对话框）
+// {F0C2B6E8-527A-8F9E-3B10-C06E8DA1F179}
+DEFINE_GUID(GUID_M2CLangBarSettingsButton,
+    0xf0c2b6e8, 0x527a, 0x8f9e, 0x3b, 0x10, 0xc0, 0x6e, 0x8d, 0xa1, 0xf1, 0x79);
+
 // 显示名称
 #define M2C_SERVICE_DESC       L"M2C 拼音（普通话/粤语）"
 #define M2C_LANGBAR_DESC       L"M2C 模式切换"
 #define M2C_PUNCT_BTN_DESC     L"M2C 中文/英文标点切换"
 #define M2C_WIDTH_BTN_DESC     L"M2C 全角/半角切换"
 #define M2C_VARIANT_BTN_DESC   L"M2C 简体/繁体切换"
+#define M2C_SETTINGS_BTN_DESC  L"M2C 设置"
 // 悬停提示文字（显示当前状态）
 #define M2C_TIP_ENGLISH        L"英文"
 #define M2C_TIP_MANDARIN       L"普通话"
@@ -57,6 +63,13 @@ DEFINE_GUID(GUID_M2CLangBarVariantButton,
 #define M2C_TIP_HALFWIDTH      L"半角"
 #define M2C_TIP_SIMPLIFIED     L"简体中文"
 #define M2C_TIP_TRADITIONAL    L"繁体中文"
+#define M2C_TIP_SETTINGS       L"设置"
+
+class CTextService;
+
+// 弹出"设置"对话框（模态）。hwndOwner 可为 nullptr。
+// 实现在 LangBarSettingsButton.cpp，供自绘状态条和语言栏按钮共用。
+void M2CShowSettingsDialog(CTextService* pService, HWND hwndOwner);
 
 // 每页候选数（数字键 1-9 选词）
 #define M2C_PAGE_SIZE 9

@@ -6,6 +6,7 @@
 #include "LangBarPunctButton.h"
 #include "LangBarWidthButton.h"
 #include "LangBarVariantButton.h"
+#include "LangBarSettingsButton.h"
 #include "StatusBar.h"
 
 #define M2C_REG_KEY     L"Software\\M2CIME"
@@ -13,6 +14,7 @@
 #define M2C_REG_PUNCT   L"PunctMode"
 #define M2C_REG_WIDTH   L"WidthMode"
 #define M2C_REG_VARIANT L"Variant"
+#define M2C_REG_PINYIN  L"PinyinMode"
 
 CTextService::CTextService()
     : _cRef(1)
@@ -25,12 +27,14 @@ CTextService::CTextService()
     , _pLangBarPunctButton(nullptr)
     , _pLangBarWidthButton(nullptr)
     , _pLangBarVariantButton(nullptr)
+    , _pLangBarSettingsButton(nullptr)
     , _pStatusBar(nullptr)
     , _mode(IME_MODE_MANDARIN)
     , _lastChineseMode(IME_MODE_MANDARIN)
     , _punctMode(IME_PUNCT_HALFWIDTH)
     , _widthMode(IME_WIDTH_HALFWIDTH)
     , _chineseVariant(IME_VARIANT_SIMPLIFIED)
+    , _pinyinMode(IME_PINYIN_FULL)
     , _shiftPressed(false)
     , _keyHandledInSession(false)
     , _pageIndex(0)
@@ -48,10 +52,12 @@ CTextService::CTextService()
     _LoadPunctModeFromRegistry();
     _LoadWidthModeFromRegistry();
     _LoadChineseVariantFromRegistry();
+    _LoadPinyinModeFromRegistry();
     IME_SetMode(_mode);
     IME_SetPunctMode(_punctMode);
     IME_SetWidthMode(_widthMode);
     IME_SetChineseVariant(_chineseVariant);
+    IME_SetPinyinMode(_pinyinMode);
     SetRectEmpty(&_caretRect);
     _punctBeforeCn[0] = 0;
     _punctBeforeEn[0] = 0;
@@ -163,6 +169,10 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
         _pLangBarVariantButton = new CLangBarVariantButton(this);
         pLbiMgr->AddItem(_pLangBarVariantButton);
 
+        // 设置按钮（打开设置对话框）
+        _pLangBarSettingsButton = new CLangBarSettingsButton(this);
+        pLbiMgr->AddItem(_pLangBarSettingsButton);
+
         pLbiMgr->Release();
     }
 
@@ -186,8 +196,9 @@ STDMETHODIMP CTextService::Deactivate()
         _pStatusBar = nullptr;
     }
 
-    // 移除语言栏按钮（模式切换 + 中文/英文标点切换 + 全角/半角切换 + 简体/繁体切换）
-    if (_pLangBarButton || _pLangBarPunctButton || _pLangBarWidthButton || _pLangBarVariantButton)
+    // 移除语言栏按钮（模式切换 + 中文/英文标点切换 + 全角/半角切换 + 简体/繁体切换 + 设置）
+    if (_pLangBarButton || _pLangBarPunctButton || _pLangBarWidthButton ||
+        _pLangBarVariantButton || _pLangBarSettingsButton)
     {
         ITfLangBarItemMgr* pLbiMgr = nullptr;
         if (_pThreadMgr && SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfLangBarItemMgr, (void**)&pLbiMgr)))
@@ -216,6 +227,12 @@ STDMETHODIMP CTextService::Deactivate()
                 _pLangBarVariantButton->Release();
                 _pLangBarVariantButton = nullptr;
             }
+            if (_pLangBarSettingsButton)
+            {
+                pLbiMgr->RemoveItem(_pLangBarSettingsButton);
+                _pLangBarSettingsButton->Release();
+                _pLangBarSettingsButton = nullptr;
+            }
             pLbiMgr->Release();
         }
         else
@@ -225,6 +242,7 @@ STDMETHODIMP CTextService::Deactivate()
             if (_pLangBarPunctButton) { _pLangBarPunctButton->Release(); _pLangBarPunctButton = nullptr; }
             if (_pLangBarWidthButton) { _pLangBarWidthButton->Release(); _pLangBarWidthButton = nullptr; }
             if (_pLangBarVariantButton) { _pLangBarVariantButton->Release(); _pLangBarVariantButton = nullptr; }
+            if (_pLangBarSettingsButton) { _pLangBarSettingsButton->Release(); _pLangBarSettingsButton = nullptr; }
         }
     }
 
@@ -517,6 +535,45 @@ void CTextService::_UpdateLangBarVariantButton()
         _pLangBarVariantButton->_NotifyUpdate();
     if (_pStatusBar)
         _pStatusBar->_Update();
+}
+
+// ================= 全拼/双拼 =================
+
+void CTextService::SetPinyinMode(ImePinyinMode mode, bool fSaveToRegistry)
+{
+    if (_pinyinMode == mode) return;
+    _pinyinMode = mode;
+    IME_SetPinyinMode(mode);
+
+    if (fSaveToRegistry)
+    {
+        HKEY hKey = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, nullptr,
+                            REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+        {
+            DWORD v = (DWORD)mode;
+            RegSetValueExW(hKey, M2C_REG_PINYIN, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+            RegCloseKey(hKey);
+        }
+    }
+}
+
+void CTextService::_LoadPinyinModeFromRegistry()
+{
+    // 默认全拼
+    _pinyinMode = IME_PINYIN_FULL;
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, M2C_REG_KEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD type = 0, size = sizeof(DWORD), v = 0;
+        if (RegQueryValueExW(hKey, M2C_REG_PINYIN, nullptr, &type, (BYTE*)&v, &size) == ERROR_SUCCESS
+            && type == REG_DWORD && v <= IME_PINYIN_DOUBLE)
+        {
+            _pinyinMode = (ImePinyinMode)v;
+        }
+        RegCloseKey(hKey);
+    }
 }
 
 // 查询本线程当前激活的键盘输入法是否为本输入法。

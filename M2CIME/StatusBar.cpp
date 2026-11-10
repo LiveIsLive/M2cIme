@@ -25,11 +25,11 @@ static const COLORREF kArrow     = RGB(140, 140, 140);
 
 CStatusBar::CStatusBar(CTextService* pService)
     : _pService(pService), _hwnd(nullptr), _hwndTip(nullptr), _fontMode(nullptr), _fontArrow(nullptr),
-      _fontPunct(nullptr), _fontWidth(nullptr), _fontVariant(nullptr), _hover(false),
+      _fontPunct(nullptr), _fontWidth(nullptr), _fontVariant(nullptr), _fontSettings(nullptr), _hover(false),
       _dragging(false), _dragMoved(false), _suppressClick(false),
       _dragStart{}, _dragOrigin{},
       _hasCustomPos(false), _posX(0), _posY(0),
-      _tipMode{}, _tipPunct{}, _tipWidth{}, _tipVariant{}
+      _tipMode{}, _tipPunct{}, _tipWidth{}, _tipVariant{}, _tipSettings{}
 {
 }
 
@@ -75,6 +75,9 @@ void CStatusBar::_EnsureWindow()
         _fontVariant = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+        _fontSettings = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI Symbol");
         _Reposition();
         _EnsureTooltip();
     }
@@ -129,6 +132,12 @@ void CStatusBar::_EnsureTooltip()
     ti.lpszText = _tipVariant;
     SendMessageW(_hwndTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 
+    ti.uId = 5;
+    ti.rect.left = kVariantRight + 1;
+    ti.rect.right = kSettingsRight;
+    ti.lpszText = _tipSettings;
+    SendMessageW(_hwndTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+
     _UpdateTooltipText();
 }
 
@@ -152,6 +161,8 @@ void CStatusBar::_UpdateTooltipText()
     ImeChineseVariant variant = _pService ? _pService->GetChineseVariant() : IME_VARIANT_SIMPLIFIED;
     wcscpy_s(_tipVariant, variant == IME_VARIANT_TRADITIONAL ? M2C_TIP_TRADITIONAL : M2C_TIP_SIMPLIFIED);
 
+    wcscpy_s(_tipSettings, M2C_TIP_SETTINGS);
+
     if (!_hwndTip) return;
 
     TOOLINFO ti = {};
@@ -172,6 +183,10 @@ void CStatusBar::_UpdateTooltipText()
 
     ti.uId = 4;
     ti.lpszText = _tipVariant;
+    SendMessageW(_hwndTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+
+    ti.uId = 5;
+    ti.lpszText = _tipSettings;
     SendMessageW(_hwndTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
 }
 
@@ -322,6 +337,7 @@ void CStatusBar::_Destroy()
     if (_fontPunct) { DeleteObject(_fontPunct); _fontPunct = nullptr; }
     if (_fontWidth) { DeleteObject(_fontWidth); _fontWidth = nullptr; }
     if (_fontVariant) { DeleteObject(_fontVariant); _fontVariant = nullptr; }
+    if (_fontSettings) { DeleteObject(_fontSettings); _fontSettings = nullptr; }
 }
 
 LRESULT CStatusBar::_OnPaint()
@@ -383,6 +399,8 @@ LRESULT CStatusBar::_OnPaint()
     LineTo(memDC, kPunctRight, rc.bottom - 5);
     MoveToEx(memDC, kVariantRight, 4, nullptr);
     LineTo(memDC, kVariantRight, rc.bottom - 5);
+    MoveToEx(memDC, kSettingsRight, 4, nullptr);
+    LineTo(memDC, kSettingsRight, rc.bottom - 5);
     SelectObject(memDC, oldSepPen);
     DeleteObject(sepPen);
 
@@ -416,11 +434,19 @@ LRESULT CStatusBar::_OnPaint()
     rcVariant.right = kVariantRight;
     DrawTextW(memDC, variantText, 1, &rcVariant, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
+    // 设置齿轮（⚙）
+    SelectObject(memDC, _fontSettings);
+    SetTextColor(memDC, kTextEn);
+    RECT rcSettings = rc;
+    rcSettings.left = kVariantRight;
+    rcSettings.right = kSettingsRight;
+    DrawTextW(memDC, L"\u2699", 1, &rcSettings, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
     // ▾
     SelectObject(memDC, _fontArrow);
     SetTextColor(memDC, kArrow);
     RECT rcArrow = rc;
-    rcArrow.left = kVariantRight;
+    rcArrow.left = kSettingsRight;
     rcArrow.right = rc.right - 4;
     DrawTextW(memDC, L"▼", 1, &rcArrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -623,6 +649,7 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
     // 全角/半角区（kModeRight ~ kWidthRight）：切换全角/半角
     // 标点区（kWidthRight ~ kPunctRight）：切换中文/英文标点
     // 简/繁区（kPunctRight ~ kVariantRight）：切换简体/繁体
+    // 设置区（kVariantRight ~ kSettingsRight）：打开设置对话框
     if (clickX >= kModeRight && clickX < kWidthRight)
     {
         _pService->ToggleWidthMode();
@@ -641,7 +668,13 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
         _Update();
         return;
     }
-    if (clickX >= kVariantRight)
+    if (clickX >= kVariantRight && clickX < kSettingsRight)
+    {
+        // 打开"设置"对话框；本窗口为置顶且不激活窗口，用其作为 owner 保证对话框显示在最前
+        M2CShowSettingsDialog(_pService, _hwnd);
+        return;
+    }
+    if (clickX >= kSettingsRight)
     {
         // 箭头区：也弹出模式菜单
     }

@@ -12,6 +12,7 @@ class CLangBarButton;
 class CLangBarPunctButton;
 class CLangBarWidthButton;
 class CLangBarVariantButton;
+class CLangBarSettingsButton;
 class CStatusBar;
 
 class CTextService :
@@ -71,6 +72,10 @@ public:
     ImeChineseVariant GetChineseVariant() const { return _chineseVariant; }
     void  ToggleChineseVariant();
 
+    // 拼音输入方式（全拼/双拼）
+    void  SetPinyinMode(ImePinyinMode mode, bool fSaveToRegistry = true);
+    ImePinyinMode GetPinyinMode() const { return _pinyinMode; }
+
     // 候选窗鼠标点击选词回调
     void OnCandidateClicked(int itemIndexOnPage);
 
@@ -107,6 +112,7 @@ private:
     void _LoadPunctModeFromRegistry();
     void _LoadWidthModeFromRegistry();
     void _LoadChineseVariantFromRegistry();
+    void _LoadPinyinModeFromRegistry();
 
     // 语言栏按钮文字刷新
     void _UpdateLangBarButton();
@@ -132,6 +138,7 @@ private:
     CLangBarPunctButton* _pLangBarPunctButton;  // 中文/英文标点切换按钮
     CLangBarWidthButton* _pLangBarWidthButton;  // 全角/半角切换按钮
     CLangBarVariantButton* _pLangBarVariantButton; // 简体/繁体切换按钮
+    CLangBarSettingsButton* _pLangBarSettingsButton; // 设置按钮
     CStatusBar*       _pStatusBar;
 
     ImeInputMode    _mode;              // 当前模式
@@ -139,6 +146,7 @@ private:
     ImePunctMode    _punctMode;         // 当前标点模式（中文/英文标点）
     ImeWidthMode    _widthMode;         // 当前字符宽度模式（全角/半角）
     ImeChineseVariant _chineseVariant;  // 当前中文字形（简体/繁体）
+    ImePinyinMode   _pinyinMode;        // 当前拼音输入方式（全拼/双拼）
     bool            _shiftPressed;      // Shift 按下后尚未消费其它键
     bool            _keyHandledInSession; // edit session 中是否消费了按键
     int             _pageIndex;         // 候选翻页页号

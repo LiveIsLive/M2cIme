@@ -1,10 +1,12 @@
 #include "pch.h"
 #include "IMEEngine.h"
 #include "Dictionary.h"
+#include "PinyinSegmenter.h"
 
 #include <string>
 #include <vector>
 #include <cctype>
+#include <cstring>
 
 namespace
 {
@@ -12,6 +14,7 @@ namespace
     ImeInputMode g_mode = IME_MODE_MANDARIN;
     ImePunctMode g_punctMode = IME_PUNCT_HALFWIDTH;  // 默认半角标点
     ImeChineseVariant g_chineseVariant = IME_VARIANT_SIMPLIFIED;  // 默认简体中文
+    ImePinyinMode g_pinyinMode = IME_PINYIN_FULL;     // 默认全拼
 
     std::string          g_composition;     // 当前拼音串（小写）
     std::vector<DictEntry> g_candidates;    // 当前候选词列表
@@ -48,6 +51,202 @@ namespace
         return out;
     }
 
+    // ===== 微软双拼键位映射与解码 =====
+    // 每个汉字用「声母键 + 韵母键」两键输入。
+    // 声母：b p m f d t n l g k h j q x z c s r y w 与键位一一对应；
+    //       zh→v, ch→i, sh→u；零声母用 o 作占位，再跟韵母键。
+    // 韵母分配（微软双拼方案）：
+    //   A=a  B=ou  C=iao  D=iang/uang  E=e  F=en  G=eng  H=ang  I=i  J=an
+    //   K=ao  L=ai  M=ian  N=in  O=o/uo  P=un  Q=iu  R=uan/er  S=iong/ong
+    //   T=ue  U=u  V=ue/ui  W=ua/ia  X=ie  Y=uai/ü  Z=ei  ;=ing
+
+    // 取某键对应的声母（空串表示该键无声母：a/e/o 及 ;）
+    static const char* ShuangpinInitial(char key)
+    {
+        switch (key)
+        {
+        case 'b': return "b"; case 'p': return "p"; case 'm': return "m"; case 'f': return "f";
+        case 'd': return "d"; case 't': return "t"; case 'n': return "n"; case 'l': return "l";
+        case 'g': return "g"; case 'k': return "k"; case 'h': return "h";
+        case 'j': return "j"; case 'q': return "q"; case 'x': return "x";
+        case 'z': return "z"; case 'c': return "c"; case 's': return "s";
+        case 'r': return "r"; case 'y': return "y"; case 'w': return "w";
+        case 'v': return "zh"; case 'i': return "ch"; case 'u': return "sh";
+        default:  return "";   // a, e, o, ;
+        }
+    }
+
+    // 取某键对应的韵母列表（可能有多个，逐个尝试取合法音节）
+    static void ShuangpinFinals(char key, std::vector<std::string>& out)
+    {
+        out.clear();
+        switch (key)
+        {
+        case 'a': out.push_back("a"); break;
+        case 'b': out.push_back("ou"); break;
+        case 'c': out.push_back("iao"); break;
+        case 'd': out.push_back("iang"); out.push_back("uang"); break;
+        case 'e': out.push_back("e"); break;
+        case 'f': out.push_back("en"); break;
+        case 'g': out.push_back("eng"); break;
+        case 'h': out.push_back("ang"); break;
+        case 'i': out.push_back("i"); break;
+        case 'j': out.push_back("an"); break;
+        case 'k': out.push_back("ao"); break;
+        case 'l': out.push_back("ai"); break;
+        case 'm': out.push_back("ian"); break;
+        case 'n': out.push_back("in"); break;
+        case 'o': out.push_back("o"); out.push_back("uo"); break;
+        case 'p': out.push_back("un"); break;
+        case 'q': out.push_back("iu"); break;
+        case 'r': out.push_back("uan"); out.push_back("er"); break;
+        case 's': out.push_back("iong"); out.push_back("ong"); break;
+        case 't': out.push_back("ue"); break;
+        case 'u': out.push_back("u"); break;
+        case 'v': out.push_back("ue"); out.push_back("ui"); break;
+        case 'w': out.push_back("ua"); out.push_back("ia"); break;
+        case 'x': out.push_back("ie"); break;
+        case 'y': out.push_back("uai"); out.push_back("v"); break;  // v = ü
+        case 'z': out.push_back("ei"); break;
+        case ';': out.push_back("ing"); break;
+        }
+    }
+
+    // 声母 + 韵母 → 拼音串；处理 ü 的写法：j/q/x/y 后 ü 写 u，n/l 后写 v
+    static std::string CombineInitialFinal(const std::string& initial, const std::string& finalStr)
+    {
+        if (finalStr == "v")
+        {
+            if (initial == "j" || initial == "q" || initial == "x" || initial == "y")
+                return initial + "u";
+            return initial + "v";
+        }
+        return initial + finalStr;
+    }
+
+    // 解码一对双拼键（声母键 k1 + 韵母键 k2）为一个拼音音节。
+    // 若 k1 == 'o' 视为零声母，音节取 k2 的韵母（须能独立成音节）。
+    static std::string ShuangpinDecodePair(char k1, char k2)
+    {
+        std::vector<std::string> finals;
+        ShuangpinFinals(k2, finals);
+
+        if (k1 == 'o')
+        {
+            // 零声母：韵母本身须为合法音节（a/ai/an/ang/ao/e/ei/en/er/o/ou）
+            for (const auto& f : finals)
+                if (PinyinSegmenter::IsValidSyllable(f))
+                    return f;
+            return finals.empty() ? std::string() : finals[0];
+        }
+
+        std::string initial = ShuangpinInitial(k1);
+        for (const auto& f : finals)
+        {
+            std::string cand = CombineInitialFinal(initial, f);
+            if (PinyinSegmenter::IsValidSyllable(cand))
+                return cand;
+        }
+        // 无合法组合时取第一个韵母作回退（用于未完整输入时的候选提示）
+        return finals.empty() ? initial : CombineInitialFinal(initial, finals[0]);
+    }
+
+    // 判断一个字符是否为双拼有效按键（a-z 或 ;）
+    static bool IsShuangpinKey(char c)
+    {
+        return isalpha((unsigned char)c) || c == ';';
+    }
+
+    // 把双拼原始按键串解码为完整拼音串（供词典查询）。
+    // 标点等非双拼键会被跳过；末尾不足一键的残余按声母处理。
+    static std::string ShuangpinDecode(const std::string& raw)
+    {
+        std::string decoded;
+        size_t i = 0;
+        while (i < raw.size())
+        {
+            char c = raw[i];
+            if (!IsShuangpinKey(c)) { ++i; continue; }
+
+            if (i + 1 >= raw.size() || !IsShuangpinKey(raw[i + 1]))
+            {
+                // 孤键：输出其声母（零声母键输出空串）
+                decoded += ShuangpinInitial(c);
+                ++i;
+                continue;
+            }
+            decoded += ShuangpinDecodePair(c, raw[i + 1]);
+            i += 2;
+        }
+        return decoded;
+    }
+
+    // 双拼音节段：记录该音节消耗的原始按键数与解码后的拼音字母数
+    struct ShuangpinSeg
+    {
+        size_t rawKeys;     // 原始按键数（1 或 2）
+        size_t decodedLen;  // 解码出的拼音字母数
+    };
+
+    // 把原始按键串切分为双拼音节段（标点跳过，不计入）
+    static std::vector<ShuangpinSeg> ShuangpinSegments(const std::string& raw)
+    {
+        std::vector<ShuangpinSeg> segs;
+        size_t i = 0;
+        while (i < raw.size())
+        {
+            char c = raw[i];
+            if (!IsShuangpinKey(c)) { ++i; continue; }
+
+            if (i + 1 >= raw.size() || !IsShuangpinKey(raw[i + 1]))
+            {
+                segs.push_back({ 1, std::strlen(ShuangpinInitial(c)) });
+                ++i;
+                continue;
+            }
+            std::string syl = ShuangpinDecodePair(c, raw[i + 1]);
+            segs.push_back({ 2, syl.size() });
+            i += 2;
+        }
+        return segs;
+    }
+
+    // 给定需消耗的解码拼音字母数，换算为应从原始组合串头部删除的按键数。
+    // 若消耗落在某个音节中间，则把该音节整段一起删掉（双拼不能半字删）。
+    static size_t ShuangpinRawKeysForDecodedLen(const std::string& raw, size_t decodedConsume)
+    {
+        auto segs = ShuangpinSegments(raw);
+        size_t decAcc = 0, rawAcc = 0;
+        for (const auto& s : segs)
+        {
+            if (decAcc >= decodedConsume) break;
+            if (decAcc + s.decodedLen <= decodedConsume)
+            {
+                decAcc += s.decodedLen;
+                rawAcc += s.rawKeys;
+            }
+            else
+            {
+                rawAcc += s.rawKeys;   // 落在音节中间：整段删掉
+                break;
+            }
+        }
+        return rawAcc;
+    }
+
+    // 从组合串头部删除 nKeys 个双拼按键（标点随按键一并删除，行为同 ConsumeLetters）
+    static void ConsumeShuangpinKeys(std::string& s, size_t nKeys)
+    {
+        size_t consumed = 0;
+        size_t keysSeen = 0;
+        for (size_t i = 0; i < s.size() && keysSeen < nKeys; ++i)
+        {
+            ++consumed;
+            if (IsShuangpinKey(s[i])) ++keysSeen;
+        }
+        s.erase(0, consumed);
+    }
+
     // 根据当前组合串重新生成候选词
     void RefreshCandidates()
     {
@@ -57,10 +256,18 @@ namespace
         // 组合串里可能混有标点（如 "nin"shizuncheng），词典只认拼音，
         // 所以先用过滤掉标点/数字的纯拼音串来查候选
         std::string purePinyin;
-        purePinyin.reserve(g_composition.size());
-        for (char c : g_composition)
-            if (isalpha((unsigned char)c))
-                purePinyin.push_back((char)tolower((unsigned char)c));
+        if (g_pinyinMode == IME_PINYIN_DOUBLE)
+        {
+            // 双拼：把原始按键串解码为完整拼音后再查词典
+            purePinyin = ShuangpinDecode(g_composition);
+        }
+        else
+        {
+            purePinyin.reserve(g_composition.size());
+            for (char c : g_composition)
+                if (isalpha((unsigned char)c))
+                    purePinyin.push_back((char)tolower((unsigned char)c));
+        }
         if (purePinyin.empty()) return;  // 全是标点，不生成候选
 
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
@@ -102,8 +309,17 @@ namespace
             // 逐级回退选中的候选（如输入 ryjx 选中「如意」ry）：
             // 消耗指定数量的纯拼音字母，自动跳过标点
             size_t n = chosen.consumeInputLen;
-            if (n > g_composition.size()) n = g_composition.size();
-            ConsumeLetters(g_composition, n);
+            if (g_pinyinMode == IME_PINYIN_DOUBLE)
+            {
+                // consumeInputLen 是解码后的拼音字母数，换算为原始双拼按键数
+                size_t rawKeys = ShuangpinRawKeysForDecodedLen(g_composition, n);
+                ConsumeShuangpinKeys(g_composition, rawKeys);
+            }
+            else
+            {
+                if (n > g_composition.size()) n = g_composition.size();
+                ConsumeLetters(g_composition, n);
+            }
         }
         else if (chosen.viaInitials)
         {
@@ -115,19 +331,34 @@ namespace
             // 连续选词：截掉候选拼音与组合串的纯公共前缀字母数
             //  - 输入 "dou" 时选「豆」(dou) → 余下 bo，刷新候选继续选词；
             //  - 只输入声母 n 时选「你」(ni) → 公共前缀 n 被消耗。
-            // 注意：组合串里可能混有标点，所以先算纯拼音公共前缀，
-            // 再用 ConsumeLetters 跳回原始串消耗（把标点也一并消耗掉）。
             size_t matchLen = 0;
-            size_t j = 0;  // g_composition 里的字母位置
-            while (matchLen < chosen.pinyin.size() && j < g_composition.size())
+            if (g_pinyinMode == IME_PINYIN_DOUBLE)
             {
-                if (!isalpha((unsigned char)g_composition[j])) { ++j; continue; }
-                if (chosen.pinyin[matchLen] != (char)tolower((unsigned char)g_composition[j]))
-                    break;
-                ++matchLen;
-                ++j;
+                // 双拼：用解码后的完整拼音与候选拼音求公共前缀长度
+                std::string decoded = ShuangpinDecode(g_composition);
+                while (matchLen < chosen.pinyin.size() && matchLen < decoded.size())
+                {
+                    if (chosen.pinyin[matchLen] != decoded[matchLen]) break;
+                    ++matchLen;
+                }
+                size_t rawKeys = ShuangpinRawKeysForDecodedLen(g_composition, matchLen);
+                ConsumeShuangpinKeys(g_composition, rawKeys);
             }
-            ConsumeLetters(g_composition, matchLen);
+            else
+            {
+                // 注意：组合串里可能混有标点，所以先算纯拼音公共前缀，
+                // 再用 ConsumeLetters 跳回原始串消耗（把标点也一并消耗掉）。
+                size_t j = 0;  // g_composition 里的字母位置
+                while (matchLen < chosen.pinyin.size() && j < g_composition.size())
+                {
+                    if (!isalpha((unsigned char)g_composition[j])) { ++j; continue; }
+                    if (chosen.pinyin[matchLen] != (char)tolower((unsigned char)g_composition[j]))
+                        break;
+                    ++matchLen;
+                    ++j;
+                }
+                ConsumeLetters(g_composition, matchLen);
+            }
         }
 
         g_candidates.clear();
@@ -203,6 +434,22 @@ void IME_SetChineseVariant(ImeChineseVariant variant)
 ImeChineseVariant IME_GetChineseVariant()
 {
     return g_chineseVariant;
+}
+
+void IME_SetPinyinMode(ImePinyinMode mode)
+{
+    if (g_pinyinMode != mode)
+    {
+        g_pinyinMode = mode;
+        // 切换全拼/双拼时清空当前组合，避免候选与新方式不一致
+        g_composition.clear();
+        g_candidates.clear();
+    }
+}
+
+ImePinyinMode IME_GetPinyinMode()
+{
+    return g_pinyinMode;
 }
 
 // ASCII → 全角字符：空格转 U+3000，可打印字符(0x21-0x7E) 加 0xFEE0
