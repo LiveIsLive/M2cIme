@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# 本地测试截图与系统输入法热键注册表备份（会话产物）
+.screenshots/
+backup_ime_hotkeys_*.reg

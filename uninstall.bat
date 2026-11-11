@@ -10,8 +10,8 @@ if %errorlevel% neq 0 (
 
 set DIR=%~dp0
 
-regsvr32 /s /u "%DIR%M2CIME\x64\Release\M2CIME.dll"
-"%SystemRoot%\SysWOW64\regsvr32.exe" /s /u "%DIR%M2CIME\Release\M2CIME32.dll"
+regsvr32 /s /u "%DIR%x64\Release\M2CIME.dll"
+"%SystemRoot%\SysWOW64\regsvr32.exe" /s /u "%DIR%Release\M2CIME32.dll"
 
 taskkill /f /im ctfmon.exe >nul 2>&1
 start "" "%SystemRoot%\System32\ctfmon.exe"
