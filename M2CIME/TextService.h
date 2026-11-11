@@ -1,7 +1,8 @@
 #pragma once
 
 // CTextService —— TSF 文本服务主类
-// 实现：ITfTextInputProcessorEx / ITfKeyEventSink / ITfThreadFocusSink / ITfActiveLanguageProfileNotifySink
+// 实现：ITfTextInputProcessorEx / ITfKeyEventSink / ITfThreadFocusSink /
+//       ITfActiveLanguageProfileNotifySink / ITfCompartmentEventSink
 
 #include "Globals.h"
 
@@ -19,7 +20,8 @@ class CTextService :
     public ITfTextInputProcessorEx,
     public ITfKeyEventSink,
     public ITfThreadFocusSink,
-    public ITfActiveLanguageProfileNotifySink
+    public ITfActiveLanguageProfileNotifySink,
+    public ITfCompartmentEventSink
 {
 public:
     CTextService();
@@ -51,6 +53,9 @@ public:
 
     // ITfActiveLanguageProfileNotifySink
     STDMETHODIMP OnActivated(REFCLSID clsid, REFGUID guidProfile, BOOL fActivated) override;
+
+    // ITfCompartmentEventSink（键盘开/关舱室）
+    STDMETHODIMP OnChange(REFGUID rguid) override;
 
     // ===== 内部方法 =====
     void  SetMode(ImeInputMode mode, bool fSaveToRegistry = true);
@@ -126,12 +131,20 @@ private:
     // 按「是否有焦点 + 是否为当前输入法」同步状态条显隐
     void _SyncStatusBarVisibility();
 
+    // 键盘开/关舱室（GUID_COMPARTMENT_KEYBOARD_OPENCLOSE）联动：
+    // 系统输入法热键 Ctrl+空格 由 imm32/CUAS 层处理并翻转该舱室（微软拼音同款机制），
+    // M2C 依此切换内部中英文模式；SetMode 时反向同步，保持状态一致
+    void _SyncKeyboardOpenClose(ImeInputMode mode);
+    LONG _ReadCompartmentLong(REFGUID rguid);
+
 private:
     LONG            _cRef;
     ITfThreadMgr*   _pThreadMgr;
     TfClientId      _tfClientId;
     DWORD           _dwThreadFocusSinkCookie;
     DWORD           _dwActiveProfileSinkCookie;
+    DWORD           _dwCompartmentSinkCookie;   // 键盘开/关舱室 sink（OPENCLOSE）
+    bool            _fInCompartmentSink;        // 正在处理舱室事件（防止回环）
 
     CCandidateWindow* _pCandidateWnd;
     CLangBarButton*   _pLangBarButton;

@@ -9,6 +9,9 @@
 #include "LangBarSettingsButton.h"
 #include "StatusBar.h"
 
+#include <wchar.h>
+#include <oleauto.h>
+
 #define M2C_REG_KEY     L"Software\\M2CIME"
 #define M2C_REG_MODE    L"Mode"
 #define M2C_REG_PUNCT   L"PunctMode"
@@ -22,6 +25,8 @@ CTextService::CTextService()
     , _tfClientId(TF_CLIENTID_NULL)
     , _dwThreadFocusSinkCookie(TF_INVALID_COOKIE)
     , _dwActiveProfileSinkCookie(TF_INVALID_COOKIE)
+    , _dwCompartmentSinkCookie(TF_INVALID_COOKIE)
+    , _fInCompartmentSink(false)
     , _pCandidateWnd(nullptr)
     , _pLangBarButton(nullptr)
     , _pLangBarPunctButton(nullptr)
@@ -95,6 +100,10 @@ STDMETHODIMP CTextService::QueryInterface(REFIID riid, void** ppvObj)
     {
         *ppvObj = (ITfActiveLanguageProfileNotifySink*)this;
     }
+    else if (IsEqualIID(riid, IID_ITfCompartmentEventSink))
+    {
+        *ppvObj = (ITfCompartmentEventSink*)this;
+    }
     else
     {
         return E_NOINTERFACE;
@@ -133,6 +142,15 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
     if (SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfKeystrokeMgr, (void**)&pKeyMgr)))
     {
         pKeyMgr->AdviseKeyEventSink(_tfClientId, (ITfKeyEventSink*)this, TRUE);
+
+        // 注册保留键 Ctrl+空格（切换中英文模式）。仅当系统"输入法/非输入法切换"热键
+        // 被用户改掉/禁用、Ctrl+空格 不再被 imm32 层拦截时由此路径接管
+        // （平时走 OnChange 的舱室路径，见下方）。
+        TF_PRESERVEDKEY pkCtrlSpace = { VK_SPACE, TF_MOD_CONTROL };
+        pKeyMgr->PreserveKey(_tfClientId, GUID_M2CPreservedKeyCtrlSpace,
+                             &pkCtrlSpace, M2C_PRESERVEDKEY_CTRLSPACE_DESC,
+                             (ULONG)wcslen(M2C_PRESERVEDKEY_CTRLSPACE_DESC));
+
         pKeyMgr->Release();
     }
 
@@ -144,6 +162,33 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
         pSource->AdviseSink(IID_ITfActiveLanguageProfileNotifySink,
                             (ITfActiveLanguageProfileNotifySink*)this, &_dwActiveProfileSinkCookie);
         pSource->Release();
+    }
+
+    // 监听线程"键盘开/关"舱室（GUID_COMPARTMENT_KEYBOARD_OPENCLOSE）：
+    // 系统输入法热键 Ctrl+空格（"输入法/非输入法切换"）由 imm32/CUAS 层处理，
+    // 按键不会送入 TSF，而是翻转该舱室；M2C 依此切换内部中英文模式
+    // （微软拼音的 Ctrl+空格 切换即此机制）。
+    {
+        ITfCompartmentMgr* pCompMgr = nullptr;
+        if (SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfCompartmentMgr, (void**)&pCompMgr)))
+        {
+            ITfCompartment* pComp = nullptr;
+            if (SUCCEEDED(pCompMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &pComp)))
+            {
+                ITfSource* pCompSrc = nullptr;
+                if (SUCCEEDED(pComp->QueryInterface(IID_ITfSource, (void**)&pCompSrc)))
+                {
+                    pCompSrc->AdviseSink(IID_ITfCompartmentEventSink,
+                                         (ITfCompartmentEventSink*)this,
+                                         &_dwCompartmentSinkCookie);
+                    pCompSrc->Release();
+                }
+                pComp->Release();
+            }
+            pCompMgr->Release();
+        }
+        // 激活时把当前模式同步到舱室（保证之后每次热键翻转 = 恰好一次模式切换）
+        _SyncKeyboardOpenClose(_mode);
     }
 
     // 创建候选窗（隐藏状态）
@@ -260,6 +305,9 @@ STDMETHODIMP CTextService::Deactivate()
         ITfKeystrokeMgr* pKeyMgr = nullptr;
         if (SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfKeystrokeMgr, (void**)&pKeyMgr)))
         {
+            // 注销保留键 Ctrl+空格（参数顺序：rguid, pprekey）
+            TF_PRESERVEDKEY pkCtrlSpace = { VK_SPACE, TF_MOD_CONTROL };
+            pKeyMgr->UnpreserveKey(GUID_M2CPreservedKeyCtrlSpace, &pkCtrlSpace);
             pKeyMgr->UnadviseKeyEventSink(_tfClientId);
             pKeyMgr->Release();
         }
@@ -274,6 +322,28 @@ STDMETHODIMP CTextService::Deactivate()
         }
         _dwThreadFocusSinkCookie = TF_INVALID_COOKIE;
         _dwActiveProfileSinkCookie = TF_INVALID_COOKIE;
+
+        // 注销键盘开/关舱室 sink
+        ITfCompartmentMgr* pCompMgr = nullptr;
+        if (SUCCEEDED(_pThreadMgr->QueryInterface(IID_ITfCompartmentMgr, (void**)&pCompMgr)))
+        {
+            ITfCompartment* pComp = nullptr;
+            if (SUCCEEDED(pCompMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &pComp)))
+            {
+                if (_dwCompartmentSinkCookie != TF_INVALID_COOKIE)
+                {
+                    ITfSource* pCompSrc = nullptr;
+                    if (SUCCEEDED(pComp->QueryInterface(IID_ITfSource, (void**)&pCompSrc)))
+                    {
+                        pCompSrc->UnadviseSink(_dwCompartmentSinkCookie);
+                        pCompSrc->Release();
+                    }
+                }
+                pComp->Release();
+            }
+            pCompMgr->Release();
+        }
+        _dwCompartmentSinkCookie = TF_INVALID_COOKIE;
         _pThreadMgr->Release();
         _pThreadMgr = nullptr;
     }
@@ -316,6 +386,82 @@ STDMETHODIMP CTextService::OnActivated(REFCLSID clsid, REFGUID guidProfile, BOOL
     return S_OK;
 }
 
+// ================= ITfCompartmentEventSink =================
+
+STDMETHODIMP CTextService::OnChange(REFGUID rguid)
+{
+    // Ctrl+空格（系统"输入法/非输入法切换"热键）→ imm32/CUAS 翻转键盘开/关舱室 → 此处同步模式。
+    // 若正在处理舱室事件或自身同步，忽略（防回环）。
+    if (_fInCompartmentSink) return S_OK;
+    if (!IsEqualGUID(rguid, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) return S_OK;
+
+    // 开（1）= 中文输入 → 切回最近中文模式（普通话/粤语）；关（0）= 英文直通
+    LONG vOpen = _ReadCompartmentLong(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
+    _fInCompartmentSink = true;
+    SetMode(vOpen ? _lastChineseMode : IME_MODE_ENGLISH);
+    _fInCompartmentSink = false;
+    return S_OK;
+}
+
+void CTextService::_SyncKeyboardOpenClose(ImeInputMode mode)
+{
+    // 把内部中英文模式同步到线程"键盘开/关"舱室（中文=开，英文=关）。
+    // 值相同则跳过写入，避免触发本方 OnChange 造成回环。
+    if (!_pThreadMgr || _tfClientId == TF_CLIENTID_NULL) return;
+
+    ITfCompartmentMgr* pCompMgr = nullptr;
+    if (FAILED(_pThreadMgr->QueryInterface(IID_ITfCompartmentMgr, (void**)&pCompMgr))) return;
+
+    ITfCompartment* pComp = nullptr;
+    if (SUCCEEDED(pCompMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &pComp)))
+    {
+        LONG desired = (mode != IME_MODE_ENGLISH) ? 1 : 0;
+        BOOL fNeedSet = TRUE;
+        VARIANT var;
+        VariantInit(&var);
+        if (SUCCEEDED(pComp->GetValue(&var)))
+        {
+            if (var.vt == VT_I4 && var.lVal == desired)
+                fNeedSet = FALSE;
+            VariantClear(&var);
+        }
+        if (fNeedSet)
+        {
+            VARIANT v;
+            VariantInit(&v);
+            v.vt = VT_I4;
+            v.lVal = desired;
+            pComp->SetValue(_tfClientId, &v);
+        }
+        pComp->Release();
+    }
+    pCompMgr->Release();
+}
+
+LONG CTextService::_ReadCompartmentLong(REFGUID rguid)
+{
+    if (!_pThreadMgr) return 0;
+
+    ITfCompartmentMgr* pCompMgr = nullptr;
+    if (FAILED(_pThreadMgr->QueryInterface(IID_ITfCompartmentMgr, (void**)&pCompMgr))) return 0;
+
+    LONG v = 0;
+    ITfCompartment* pComp = nullptr;
+    if (SUCCEEDED(pCompMgr->GetCompartment(rguid, &pComp)))
+    {
+        VARIANT var;
+        VariantInit(&var);
+        if (SUCCEEDED(pComp->GetValue(&var)))
+        {
+            if (var.vt == VT_I4) v = var.lVal;
+            VariantClear(&var);
+        }
+        pComp->Release();
+    }
+    pCompMgr->Release();
+    return v;
+}
+
 // ================= 模式管理 =================
 
 void CTextService::SetMode(ImeInputMode mode, bool fSaveToRegistry)
@@ -348,6 +494,12 @@ void CTextService::SetMode(ImeInputMode mode, bool fSaveToRegistry)
             RegCloseKey(hKey);
         }
     }
+
+    // 同步线程"键盘开/关"舱室，保证之后每次系统热键翻转恰好等于一次模式切换
+    // （正在处理舱室事件时跳过，防回环）
+    if (!_fInCompartmentSink)
+        _SyncKeyboardOpenClose(mode);
+
     _UpdateLangBarButton();
 }
 

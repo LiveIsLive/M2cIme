@@ -3,23 +3,6 @@
 #include "TextService.h"
 #include "CandidateWindow.h"
 #include <functional>
-#include <cstdio>
-#include <cstdarg>
-
-// 临时调试日志（定位标点顺序问题，定位后删除）
-static void _DbgLog(const wchar_t* fmt, ...)
-{
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, L"G:\\WindowsApplications\\MandarinToCantonese\\ime_debug.log", L"a") == 0 && f)
-    {
-        va_list ap;
-        va_start(ap, fmt);
-        vfwprintf(f, fmt, ap);
-        va_end(ap);
-        fputws(L"\n", f);
-        fclose(f);
-    }
-}
 
 // 通用 edit session 包装
 class CEditSession : public ITfEditSession
@@ -274,6 +257,14 @@ static bool IsCtrlAltDown()
     return (GetKeyState(VK_CONTROL) & 0x8000) || (GetKeyState(VK_MENU) & 0x8000);
 }
 
+// 判断当前是否为"纯 Ctrl+空格"（Ctrl 按下、Alt/Shift 均未按下），用于中英文模式切换
+static bool IsCtrlSpaceCombo()
+{
+    return (GetKeyState(VK_CONTROL) & 0x8000) != 0
+        && (GetKeyState(VK_MENU) & 0x8000) == 0
+        && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
+}
+
 // 把按键(vk + Shift 状态)映射成对应的 ASCII 可打印字符；非可打印返回 0
 static char _VkToAsciiChar(WPARAM vk)
 {
@@ -336,6 +327,12 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
     // Shift 永远不消费（用于 OnKeyUp 切换中英文）
     if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)
         return FALSE;
+
+    // Ctrl+空格：中英文模式切换快捷键，消费掉（避免空格落到应用）。
+    // 常规情况下该组合键被系统热键在 imm32 层拦截、走舱室路径（OnChange），
+    // 此拦截仅服务于热键被禁用时的保留键/OnKeyDown 备用路径
+    if (wParam == VK_SPACE && IsCtrlSpaceCombo())
+        return TRUE;
 
     if (IsCtrlAltDown()) return FALSE;   // 快捷键放行
 
@@ -451,6 +448,7 @@ STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* /*pContext*/, WPARAM wParam
     _shiftPressed = false;
 
     *pfEaten = _IsKeyEaten(wParam, true);
+
     return S_OK;
 }
 
@@ -458,7 +456,20 @@ STDMETHODIMP CTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM
 {
     if (!pfEaten) return E_INVALIDARG;
     *pfEaten = _IsKeyEaten(wParam, false);
+
     if (!*pfEaten) return S_OK;
+
+    // Ctrl+空格：切换 英文 <-> 最近中文模式（普通话/粤语），不上屏任何字符
+    // （与单击 Shift 切换行为一致：英文模式切回 _lastChineseMode，中文模式切到英文）。
+    // 仅当该组合键未被系统"输入法/非输入法切换"热键拦截时才会走到这里（兜底路径）。
+    if (wParam == VK_SPACE && IsCtrlSpaceCombo())
+    {
+        if (_mode == IME_MODE_ENGLISH)
+            SetMode(_lastChineseMode);
+        else
+            SetMode(IME_MODE_ENGLISH);
+        return S_OK;
+    }
 
     if (pContext == nullptr) { *pfEaten = FALSE; return S_OK; }
 
@@ -517,9 +528,22 @@ STDMETHODIMP CTextService::OnKeyUp(ITfContext* /*pContext*/, WPARAM /*wParam*/, 
     return S_OK;
 }
 
-STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID /*rguid*/, BOOL* pfEaten)
+STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID rguid, BOOL* pfEaten)
 {
     if (pfEaten) *pfEaten = FALSE;
+    if (!IsEqualGUID(rguid, GUID_M2CPreservedKeyCtrlSpace))
+        return S_OK;
+
+    // Ctrl+空格（保留键）：切换 英文 <-> 最近中文模式（普通话/粤语），不上屏任何字符
+    // （与单击 Shift 切换行为一致：英文模式切回 _lastChineseMode，中文模式切到英文）。
+    // 仅当系统"输入法/非输入法切换"热键被用户改掉/禁用、Ctrl+空格 不再被 imm32 层
+    // 拦截时才会由此路径处理（平时走 OnChange 的舱室路径）。
+    if (_mode == IME_MODE_ENGLISH)
+        SetMode(_lastChineseMode);
+    else
+        SetMode(IME_MODE_ENGLISH);
+
+    if (pfEaten) *pfEaten = TRUE;
     return S_OK;
 }
 
@@ -593,9 +617,6 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
     }
 
     bool fHasComp = IME_HasComposition();
-    _DbgLog(L"KEY vk=%u hasComp=%d pend=%d inComp=%d bLen=%d aLen=%d bEn=%s aEn=%s",
-            (unsigned)wParam, (int)fHasComp, (int)_punctPending, (int)_punctInComp,
-            _punctBeforeLen, _punctAfterLen, _punctBeforeEn, _punctAfterEn);
 
     // 组合串已消失：挂在末尾的标点一并作废
     if (_punctInComp && !fHasComp)
@@ -893,13 +914,10 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
         // 这样既不让标点候选和拼音候选混在一个候选框里，也不丢用户输入的标点。
         if (_punctBeforeLen > 0)
         {
-            HRESULT hrP = _InsertTextAtSelection(ec, pContext, _punctBeforeEn, _punctBeforeLen);
-            _DbgLog(L"IMPLICIT_PUNCT_INSERT text=[%s] len=%d hr=0x%08X",
-                    _punctBeforeEn, _punctBeforeLen, (unsigned)hrP);
+            _InsertTextAtSelection(ec, pContext, _punctBeforeEn, _punctBeforeLen);
         }
         _ClearPunctPending();
         _pageIndex = 0;
-        _DbgLog(L"IMPLICIT_PUNCT_DONE, continue to letter path");
         // 不要 return，让按键继续往下走到后面的字母/拼音处理逻辑
     }
 
@@ -1181,9 +1199,6 @@ void CTextService::_UpdateCandidateWindow(ITfContext* /*pContext*/, const RECT* 
 
     _pCandidateWnd->_Update(comp, items, _punctPending ? 0 : _pageIndex, totalPages,
                             hasCaret ? &caret : nullptr);
-    _DbgLog(L"UPD comp=[%s] items=%d pend=%d inComp=%d bLen=%d aLen=%d",
-            comp.c_str(), (int)items.size(), (int)_punctPending, (int)_punctInComp,
-            _punctBeforeLen, _punctAfterLen);
 }
 
 // ================= 鼠标点击选词（候选窗回调） =================

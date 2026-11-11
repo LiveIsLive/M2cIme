@@ -46,6 +46,15 @@ DEFINE_GUID(GUID_M2CLangBarVariantButton,
 DEFINE_GUID(GUID_M2CLangBarSettingsButton,
     0xf0c2b6e8, 0x527a, 0x8f9e, 0x3b, 0x10, 0xc0, 0x6e, 0x8d, 0xa1, 0xf1, 0x79);
 
+// Ctrl+空格 保留键（PreservedKey）命令 GUID：
+// 切换中英文模式的主路径是系统"输入法/非输入法切换"热键 → 键盘开/关舱室（见
+// TextService.cpp 的 OnChange）。该保留键为备用路径：仅当用户改掉/禁用了系统热键、
+// Ctrl+空格 不再被 imm32 层拦截时，组合键才经 ITfKeystrokeMgr::PreserveKey 路由到
+// OnPreservedKey 执行切换
+// {DED42472-1186-4CCB-8EC1-F9F2567E9891}
+DEFINE_GUID(GUID_M2CPreservedKeyCtrlSpace,
+    0xded42472, 0x1186, 0x4ccb, 0x8e, 0xc1, 0xf9, 0xf2, 0x56, 0x7e, 0x98, 0x91);
+
 // 显示名称
 #define M2C_SERVICE_DESC       L"M2C 拼音（普通话/粤语）"
 #define M2C_LANGBAR_DESC       L"M2C 模式切换"
@@ -53,10 +62,12 @@ DEFINE_GUID(GUID_M2CLangBarSettingsButton,
 #define M2C_WIDTH_BTN_DESC     L"M2C 全角/半角切换"
 #define M2C_VARIANT_BTN_DESC   L"M2C 简体/繁体切换"
 #define M2C_SETTINGS_BTN_DESC  L"M2C 设置"
+// 保留键描述（显示在系统"文本服务信息"等热键列表中）
+#define M2C_PRESERVEDKEY_CTRLSPACE_DESC  L"M2C 切换中英文模式"
 // 悬停提示文字（显示当前状态）
-#define M2C_TIP_ENGLISH        L"英文"
-#define M2C_TIP_MANDARIN       L"普通话"
-#define M2C_TIP_CANTONESE      L"粤语"
+#define M2C_TIP_ENGLISH        L"英文(ctrl+空格)"
+#define M2C_TIP_MANDARIN       L"普通话(ctrl+空格)"
+#define M2C_TIP_CANTONESE      L"粤语(ctrl+空格)"
 #define M2C_TIP_CN_PUNCT       L"中文标点"
 #define M2C_TIP_EN_PUNCT       L"英文标点"
 #define M2C_TIP_FULLWIDTH      L"全角"
