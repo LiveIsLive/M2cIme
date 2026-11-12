@@ -265,6 +265,16 @@ static bool IsCtrlSpaceCombo()
         && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
 }
 
+// 判断当前是否为"纯 Shift+空格"（Shift 按下、Ctrl/Alt/Win 均未按下），用于全角/半角切换
+static bool IsShiftSpaceCombo()
+{
+    return (GetKeyState(VK_SHIFT) & 0x8000) != 0
+        && (GetKeyState(VK_CONTROL) & 0x8000) == 0
+        && (GetKeyState(VK_MENU) & 0x8000) == 0
+        && (GetKeyState(VK_LWIN) & 0x8000) == 0
+        && (GetKeyState(VK_RWIN) & 0x8000) == 0;
+}
+
 // 把按键(vk + Shift 状态)映射成对应的 ASCII 可打印字符；非可打印返回 0
 static char _VkToAsciiChar(WPARAM vk)
 {
@@ -332,6 +342,10 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
     // 常规情况下该组合键被系统热键在 imm32 层拦截、走舱室路径（OnChange），
     // 此拦截仅服务于热键被禁用时的保留键/OnKeyDown 备用路径
     if (wParam == VK_SPACE && IsCtrlSpaceCombo())
+        return TRUE;
+
+    // Shift+空格：全角/半角切换快捷键，消费掉（避免空格落到应用）
+    if (wParam == VK_SPACE && IsShiftSpaceCombo())
         return TRUE;
 
     if (IsCtrlAltDown()) return FALSE;   // 快捷键放行
@@ -471,12 +485,22 @@ STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* /*pContext*/, WPARAM wParam
     return S_OK;
 }
 
-STDMETHODIMP CTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM /*lParam*/, BOOL* pfEaten)
+STDMETHODIMP CTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM lParam, BOOL* pfEaten)
 {
     if (!pfEaten) return E_INVALIDARG;
     *pfEaten = _IsKeyEaten(wParam, false);
 
     if (!*pfEaten) return S_OK;
+
+    // Shift+空格：切换全角/半角，不上屏任何字符。
+    // 忽略长按产生的自动重复（lParam 第 30 位），避免一次按键反复切换。
+    if (wParam == VK_SPACE && IsShiftSpaceCombo())
+    {
+        _shiftPressed = false;   // 防止随后松开 Shift 时再触发中/英文切换
+        if ((lParam & (1L << 30)) == 0)
+            ToggleWidthMode();
+        return S_OK;
+    }
 
     // Ctrl+空格：切换 英文 <-> 最近中文模式（普通话/粤语），不上屏任何字符
     // （与单击 Shift 切换行为一致：英文模式切回 _lastChineseMode，中文模式切到英文）。

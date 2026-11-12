@@ -74,10 +74,11 @@ STDMETHODIMP CLangBarWidthButton::Show(BOOL /*fShow*/) { return S_OK; }
 STDMETHODIMP CLangBarWidthButton::GetTooltipString(BSTR* pbstrToolTip)
 {
     if (!pbstrToolTip) return E_INVALIDARG;
-    const WCHAR* tip = M2C_TIP_HALFWIDTH;
+    std::wstring tip = M2C_TIP_HALFWIDTH;
     if (_pService && _pService->GetWidthMode() == IME_WIDTH_FULLWIDTH)
         tip = M2C_TIP_FULLWIDTH;
-    *pbstrToolTip = SysAllocString(tip);
+    tip += L"(Shift+空格)";
+    *pbstrToolTip = SysAllocString(tip.c_str());
     return (*pbstrToolTip) ? S_OK : E_OUTOFMEMORY;
 }
 

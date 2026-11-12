@@ -57,9 +57,9 @@ private:
     int _posX;
     int _posY;
 
-    WCHAR _tipMode[16];    // 模式区悬停提示（当前模式名）
+    WCHAR _tipMode[64];    // 模式区悬停提示（当前模式名 + 快捷键）
     WCHAR _tipPunct[16];   // 中文/英文标点区悬停提示（当前状态）
-    WCHAR _tipWidth[16];   // 全角/半角区悬停提示（当前状态）
+    WCHAR _tipWidth[64];   // 全角/半角区悬停提示（当前状态 + 快捷键）
     WCHAR _tipVariant[16]; // 简体/繁体区悬停提示（当前状态）
     WCHAR _tipSettings[16];// 设置区悬停提示
 
