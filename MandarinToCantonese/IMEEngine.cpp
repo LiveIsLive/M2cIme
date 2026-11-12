@@ -281,6 +281,25 @@ namespace
         }
     }
 
+    // 完整匹配的候选被选中后，清空组合串里的拼音输入，但保留末尾的标点。
+    // 例如双拼输入 "nihkma?" 选中「你好吗」后，组合串只应剩 "?"，
+    // 交给前端继续给出标点候选；否则末尾的 "?" 会被当成已消费的前缀，
+    // 反而被插到词的前面（"？你好吗"）。
+    void ConsumeAllPinyinKeepTrailingPunct(std::string& s)
+    {
+        size_t lastKey = std::string::npos;
+        for (size_t i = 0; i < s.size(); ++i)
+        {
+            const char c = s[i];
+            const bool isKey = (g_pinyinMode == IME_PINYIN_DOUBLE)
+                                   ? IsShuangpinKey(c)
+                                   : (isalpha((unsigned char)c) != 0);
+            if (isKey) lastKey = i;
+        }
+        if (lastKey != std::string::npos)
+            s.erase(0, lastKey + 1);
+    }
+
     // 从组合串里消耗 nLetters 个字母字符（跳过标点、数字等）
     // 例如组合串="nin"hao，消耗 3 个字母 → erase("nin")，剩余 = "hao
     void ConsumeLetters(std::string& s, size_t nLetters)
@@ -323,8 +342,9 @@ namespace
         }
         else if (chosen.viaInitials)
         {
-            // 声母简拼匹配（如 nh → 你好）：整个组合串都消耗（含标点，全部清空）
-            g_composition.clear();
+            // 声母简拼 / 混拼 / 全拼完整匹配（如 nh → 你好）：消耗所有拼音按键，
+            // 但保留末尾标点（如 nihkma? 选「你好吗」后剩 "?"），让标点继续出候选
+            ConsumeAllPinyinKeepTrailingPunct(g_composition);
         }
         else
         {

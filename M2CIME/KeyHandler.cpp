@@ -393,6 +393,25 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
     if (wParam >= '1' && wParam <= '9')
     {
         if (!fHasComp) return FALSE;
+
+        // 组合串以标点开头（从头选词）：数字选的是标点的各种写法，
+        // 这些候选由前端生成，引擎的候选列表里没有，需要单独判断。
+        WCHAR compBuf[128] = { 0 };
+        IME_GetComposition(compBuf, ARRAYSIZE(compBuf));
+        std::wstring comp(compBuf);
+        WCHAR firstPunct = 0;
+        if (_StartsWithPunct(comp, &firstPunct))
+        {
+            WCHAR cn = 0;
+            std::vector<std::wstring> punctCands;
+            int nCand = 0;
+            if (_MapPunctChar(firstPunct, &cn))
+                nCand = _BuildPunctCandidates(cn, firstPunct,
+                                              _punctMode == IME_PUNCT_FULLWIDTH,
+                                              punctCands);
+            return ((int)(wParam - '1') < nCand) ? TRUE : FALSE;
+        }
+
         int idx = _pageIndex * M2C_PAGE_SIZE + (int)(wParam - '1');
         return (idx < IME_GetCandidateCount()) ? TRUE : FALSE;
     }
