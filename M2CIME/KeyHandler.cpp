@@ -596,7 +596,8 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
 {
     // 全角模式：对"直通"的可打印 ASCII 直接转全角插入（不进拼音流程）
     // 英文模式：字母/数字/空格（标点在下方英文分支走引擎）
-    // 中文模式：Shift+大写字母、无组合串的数字、未映射符号
+    // 中文模式：Shift+大写字母、无组合串的数字/空格、未映射符号
+    // （无 Shift 的字母必须继续走拼音流程，否则不会弹出候选窗）
     if (_widthMode == IME_WIDTH_FULLWIDTH)
     {
         bool fDirect = false;
@@ -610,23 +611,39 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
         else
         {
             bool fShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-            if ((wParam >= 'A' && wParam <= 'Z') && fShift)
+            bool fHasComp = IME_HasComposition();
+            if (wParam >= 'A' && wParam <= 'Z')
             {
-                ch = (char)wParam; fDirect = true;   // 大写字母
+                // 大写字母直通；无 Shift 的字母继续走下方拼音流程，避免绕过候选窗
+                if (fShift)
+                {
+                    ch = (char)wParam;
+                    fDirect = true;
+                }
             }
             else if (wParam >= '0' && wParam <= '9')
             {
-                if (!IME_HasComposition())            // 无组合串的数字直通
+                if (!fHasComp)            // 无组合串的数字直通
                 { ch = (char)wParam; fDirect = true; }
+            }
+            else if (wParam == VK_SPACE)
+            {
+                // 无组合串时空格输出全角空格；有组合串时交给下方逻辑提交候选词
+                if (!fHasComp)
+                { ch = ' '; fDirect = true; }
             }
             else
             {
-                // 未被 _MapPunct 映射的可打印符号
-                WCHAR cn = 0, en = 0;
-                if (!_MapPunct(wParam, &cn, &en))
+                // 未被 _MapPunct 映射的可打印符号（组合串存在时 -/= 仍作翻页键）
+                bool fPageKey = (wParam == VK_OEM_MINUS || wParam == VK_OEM_PLUS);
+                if (!(fHasComp && fPageKey))
                 {
-                    char c2 = _VkToAsciiChar(wParam);
-                    if (c2 != 0) { ch = c2; fDirect = true; }
+                    WCHAR cn = 0, en = 0;
+                    if (!_MapPunct(wParam, &cn, &en))
+                    {
+                        char c2 = _VkToAsciiChar(wParam);
+                        if (c2 != 0) { ch = c2; fDirect = true; }
+                    }
                 }
             }
         }
