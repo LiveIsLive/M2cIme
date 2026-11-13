@@ -151,9 +151,6 @@ void CStatusBar::_UpdateTooltipText()
     case IME_MODE_CANTONESE: modeText = M2C_TIP_CANTONESE; break;
     }
     wcscpy_s(_tipMode, modeText);
-    // 英文模式：补充 Shift+空格（全角/半角切换）快捷键提示
-    if (mode == IME_MODE_ENGLISH)
-        wcscat_s(_tipMode, L"(Shift+空格)");
 
     ImePunctMode punctMode = _pService ? _pService->GetPunctMode() : IME_PUNCT_HALFWIDTH;
     wcscpy_s(_tipPunct, punctMode == IME_PUNCT_FULLWIDTH ? M2C_TIP_CN_PUNCT : M2C_TIP_EN_PUNCT);

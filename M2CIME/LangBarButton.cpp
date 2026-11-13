@@ -85,9 +85,6 @@ STDMETHODIMP CLangBarButton::GetTooltipString(BSTR* pbstrToolTip)
         case IME_MODE_ENGLISH:   tip = M2C_TIP_ENGLISH;   break;
         case IME_MODE_CANTONESE: tip = M2C_TIP_CANTONESE; break;
         }
-        // 英文模式：补充 Shift+空格（全角/半角切换）快捷键提示
-        if (_pService->GetMode() == IME_MODE_ENGLISH)
-            tip += L"(Shift+空格)";
     }
 
     *pbstrToolTip = SysAllocString(tip.c_str());

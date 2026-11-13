@@ -71,9 +71,9 @@ DEFINE_GUID(GUID_M2CPreservedKeyCtrlPeriod,
 #define M2C_PRESERVEDKEY_CTRLSPACE_DESC  L"M2C 切换中英文模式"
 #define M2C_PRESERVEDKEY_CTRLPERIOD_DESC L"M2C 切换中文/英文标点"
 // 悬停提示文字（显示当前状态）
-#define M2C_TIP_ENGLISH        L"英文(ctrl+空格)"
-#define M2C_TIP_MANDARIN       L"普通话(ctrl+空格)"
-#define M2C_TIP_CANTONESE      L"粤语(ctrl+空格)"
+#define M2C_TIP_ENGLISH        L"英文(Ctrl+空格)"
+#define M2C_TIP_MANDARIN       L"普通话(Ctrl+空格)"
+#define M2C_TIP_CANTONESE      L"粤语(Ctrl+空格)"
 #define M2C_TIP_CN_PUNCT       L"中文标点(Ctrl+.)"
 #define M2C_TIP_EN_PUNCT       L"英文标点(Ctrl+.)"
 #define M2C_TIP_FULLWIDTH      L"全角"
