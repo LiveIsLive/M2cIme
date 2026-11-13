@@ -55,6 +55,11 @@ DEFINE_GUID(GUID_M2CLangBarSettingsButton,
 DEFINE_GUID(GUID_M2CPreservedKeyCtrlSpace,
     0xded42472, 0x1186, 0x4ccb, 0x8e, 0xc1, 0xf9, 0xf2, 0x56, 0x7e, 0x98, 0x91);
 
+// Ctrl+. 保留键（PreservedKey）命令 GUID：切换中文/英文标点
+// {E1D53583-2297-4DDC-9FC2-0A3676F8A9A2}
+DEFINE_GUID(GUID_M2CPreservedKeyCtrlPeriod,
+    0xe1d53583, 0x2297, 0x4ddc, 0x9f, 0xc2, 0x0a, 0x36, 0x76, 0xf8, 0xa9, 0xa2);
+
 // 显示名称
 #define M2C_SERVICE_DESC       L"M2C 拼音（普通话/粤语）"
 #define M2C_LANGBAR_DESC       L"M2C 模式切换"
@@ -64,12 +69,13 @@ DEFINE_GUID(GUID_M2CPreservedKeyCtrlSpace,
 #define M2C_SETTINGS_BTN_DESC  L"M2C 设置"
 // 保留键描述（显示在系统"文本服务信息"等热键列表中）
 #define M2C_PRESERVEDKEY_CTRLSPACE_DESC  L"M2C 切换中英文模式"
+#define M2C_PRESERVEDKEY_CTRLPERIOD_DESC L"M2C 切换中文/英文标点"
 // 悬停提示文字（显示当前状态）
 #define M2C_TIP_ENGLISH        L"英文(ctrl+空格)"
 #define M2C_TIP_MANDARIN       L"普通话(ctrl+空格)"
 #define M2C_TIP_CANTONESE      L"粤语(ctrl+空格)"
-#define M2C_TIP_CN_PUNCT       L"中文标点"
-#define M2C_TIP_EN_PUNCT       L"英文标点"
+#define M2C_TIP_CN_PUNCT       L"中文标点(Ctrl+.)"
+#define M2C_TIP_EN_PUNCT       L"英文标点(Ctrl+.)"
 #define M2C_TIP_FULLWIDTH      L"全角"
 #define M2C_TIP_HALFWIDTH      L"半角"
 #define M2C_TIP_SIMPLIFIED     L"简体中文"

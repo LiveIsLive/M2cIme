@@ -265,6 +265,16 @@ static bool IsCtrlSpaceCombo()
         && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
 }
 
+// 判断当前是否为"纯 Ctrl+."（Ctrl 按下、Alt/Shift/Win 均未按下），用于中文/英文标点切换
+static bool IsCtrlPeriodCombo()
+{
+    return (GetKeyState(VK_CONTROL) & 0x8000) != 0
+        && (GetKeyState(VK_MENU) & 0x8000) == 0
+        && (GetKeyState(VK_SHIFT) & 0x8000) == 0
+        && (GetKeyState(VK_LWIN) & 0x8000) == 0
+        && (GetKeyState(VK_RWIN) & 0x8000) == 0;
+}
+
 // 判断当前是否为"纯 Shift+空格"（Shift 按下、Ctrl/Alt/Win 均未按下），用于全角/半角切换
 static bool IsShiftSpaceCombo()
 {
@@ -342,6 +352,10 @@ BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
     // 常规情况下该组合键被系统热键在 imm32 层拦截、走舱室路径（OnChange），
     // 此拦截仅服务于热键被禁用时的保留键/OnKeyDown 备用路径
     if (wParam == VK_SPACE && IsCtrlSpaceCombo())
+        return TRUE;
+
+    // Ctrl+.：中文/英文标点切换快捷键，消费掉（避免 '.' 落到应用）
+    if (wParam == VK_OEM_PERIOD && IsCtrlPeriodCombo())
         return TRUE;
 
     // Shift+空格：全角/半角切换快捷键，消费掉（避免空格落到应用）
@@ -514,6 +528,15 @@ STDMETHODIMP CTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM
         return S_OK;
     }
 
+    // Ctrl+.：切换中文/英文标点，不上屏任何字符。
+    // 忽略长按产生的自动重复（lParam 第 30 位），避免一次按键反复切换。
+    if (wParam == VK_OEM_PERIOD && IsCtrlPeriodCombo())
+    {
+        if ((lParam & (1L << 30)) == 0)
+            TogglePunctMode();
+        return S_OK;
+    }
+
     if (pContext == nullptr) { *pfEaten = FALSE; return S_OK; }
 
     _keyHandledInSession = false;
@@ -574,6 +597,15 @@ STDMETHODIMP CTextService::OnKeyUp(ITfContext* /*pContext*/, WPARAM /*wParam*/, 
 STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID rguid, BOOL* pfEaten)
 {
     if (pfEaten) *pfEaten = FALSE;
+
+    // Ctrl+.（保留键）：切换中文/英文标点，不上屏任何字符
+    if (IsEqualGUID(rguid, GUID_M2CPreservedKeyCtrlPeriod))
+    {
+        TogglePunctMode();
+        if (pfEaten) *pfEaten = TRUE;
+        return S_OK;
+    }
+
     if (!IsEqualGUID(rguid, GUID_M2CPreservedKeyCtrlSpace))
         return S_OK;
 

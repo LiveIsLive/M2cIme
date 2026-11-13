@@ -151,6 +151,12 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
                              &pkCtrlSpace, M2C_PRESERVEDKEY_CTRLSPACE_DESC,
                              (ULONG)wcslen(M2C_PRESERVEDKEY_CTRLSPACE_DESC));
 
+        // 注册保留键 Ctrl+.（切换中文/英文标点）
+        TF_PRESERVEDKEY pkCtrlPeriod = { VK_OEM_PERIOD, TF_MOD_CONTROL };
+        pKeyMgr->PreserveKey(_tfClientId, GUID_M2CPreservedKeyCtrlPeriod,
+                             &pkCtrlPeriod, M2C_PRESERVEDKEY_CTRLPERIOD_DESC,
+                             (ULONG)wcslen(M2C_PRESERVEDKEY_CTRLPERIOD_DESC));
+
         pKeyMgr->Release();
     }
 
@@ -308,6 +314,10 @@ STDMETHODIMP CTextService::Deactivate()
             // 注销保留键 Ctrl+空格（参数顺序：rguid, pprekey）
             TF_PRESERVEDKEY pkCtrlSpace = { VK_SPACE, TF_MOD_CONTROL };
             pKeyMgr->UnpreserveKey(GUID_M2CPreservedKeyCtrlSpace, &pkCtrlSpace);
+
+            // 注销保留键 Ctrl+.
+            TF_PRESERVEDKEY pkCtrlPeriod = { VK_OEM_PERIOD, TF_MOD_CONTROL };
+            pKeyMgr->UnpreserveKey(GUID_M2CPreservedKeyCtrlPeriod, &pkCtrlPeriod);
             pKeyMgr->UnadviseKeyEventSink(_tfClientId);
             pKeyMgr->Release();
         }
