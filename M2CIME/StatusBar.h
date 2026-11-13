@@ -40,7 +40,6 @@ private:
     HWND _hwnd;
     HWND _hwndTip;      // 悬停提示窗口
     HFONT _fontMode;
-    HFONT _fontArrow;
     HFONT _fontPunct;
     HFONT _fontWidth;
     HFONT _fontVariant;
@@ -63,11 +62,11 @@ private:
     WCHAR _tipVariant[16]; // 简体/繁体区悬停提示（当前状态）
     WCHAR _tipSettings[16];// 设置区悬停提示
 
-    static const int kWidth  = 221;  // 模式 + 全角/半角 + 标点 + 简/繁 + 设置 + 箭头
+    static const int kWidth  = 191;  // 模式 + 全角/半角 + 标点 + 简/繁 + 设置
     static const int kHeight = 34;
     static const int kModeRight     = 40;   // 模式区右边界（分隔线位置）
     static const int kWidthRight    = 79;   // 全角/半角区右边界
     static const int kPunctRight    = 118;  // 中文/英文标点区右边界
     static const int kVariantRight  = 157;  // 简体/繁体区右边界
-    static const int kSettingsRight = 191;  // 设置区右边界（右侧为箭头）
+    static const int kSettingsRight = 191;  // 设置区右边界（窗口最右）
 };

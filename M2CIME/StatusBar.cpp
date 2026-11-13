@@ -21,10 +21,9 @@ static const COLORREF kBorder    = RGB(206, 206, 206);
 static const COLORREF kBgHover   = RGB(240, 246, 253);
 static const COLORREF kTextCn    = RGB(0, 95, 184);
 static const COLORREF kTextEn    = RGB(90, 90, 90);
-static const COLORREF kArrow     = RGB(140, 140, 140);
 
 CStatusBar::CStatusBar(CTextService* pService)
-    : _pService(pService), _hwnd(nullptr), _hwndTip(nullptr), _fontMode(nullptr), _fontArrow(nullptr),
+    : _pService(pService), _hwnd(nullptr), _hwndTip(nullptr), _fontMode(nullptr),
       _fontPunct(nullptr), _fontWidth(nullptr), _fontVariant(nullptr), _fontSettings(nullptr), _hover(false),
       _dragging(false), _dragMoved(false), _suppressClick(false),
       _dragStart{}, _dragOrigin{},
@@ -63,9 +62,6 @@ void CStatusBar::_EnsureWindow()
         _fontMode = CreateFontW(-21, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-        _fontArrow = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
         _fontPunct = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
@@ -334,7 +330,6 @@ void CStatusBar::_Destroy()
         _hwndTip = nullptr;
     }
     if (_fontMode)  { DeleteObject(_fontMode);  _fontMode = nullptr; }
-    if (_fontArrow) { DeleteObject(_fontArrow); _fontArrow = nullptr; }
     if (_fontPunct) { DeleteObject(_fontPunct); _fontPunct = nullptr; }
     if (_fontWidth) { DeleteObject(_fontWidth); _fontWidth = nullptr; }
     if (_fontVariant) { DeleteObject(_fontVariant); _fontVariant = nullptr; }
@@ -400,8 +395,6 @@ LRESULT CStatusBar::_OnPaint()
     LineTo(memDC, kPunctRight, rc.bottom - 5);
     MoveToEx(memDC, kVariantRight, 4, nullptr);
     LineTo(memDC, kVariantRight, rc.bottom - 5);
-    MoveToEx(memDC, kSettingsRight, 4, nullptr);
-    LineTo(memDC, kSettingsRight, rc.bottom - 5);
     SelectObject(memDC, oldSepPen);
     DeleteObject(sepPen);
 
@@ -442,14 +435,6 @@ LRESULT CStatusBar::_OnPaint()
     rcSettings.left = kVariantRight;
     rcSettings.right = kSettingsRight;
     DrawTextW(memDC, L"\u2699", 1, &rcSettings, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    // ▾
-    SelectObject(memDC, _fontArrow);
-    SetTextColor(memDC, kArrow);
-    RECT rcArrow = rc;
-    rcArrow.left = kSettingsRight;
-    rcArrow.right = rc.right - 4;
-    DrawTextW(memDC, L"▼", 1, &rcArrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
     SelectObject(memDC, oldBmp);
@@ -677,13 +662,11 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
     }
     if (clickX >= kSettingsRight)
     {
-        // 箭头区：也弹出模式菜单
-    }
-    else
-    {
-        // 模式区
+        // 右侧边框处无可点击区域
+        return;
     }
 
+    // 模式区（0 ~ kModeRight）：弹出模式菜单
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
