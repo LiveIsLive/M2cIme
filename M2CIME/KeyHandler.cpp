@@ -137,6 +137,13 @@ static bool _MapPunctChar(WCHAR en, WCHAR* pCn)
     return true;
 }
 
+// 需要直接上屏的首字符标点（半角形式）：, . ! ?
+// 这 4 个标点（含全角 ，。！？）不允许成为组合串/候选框上的第 1 个字符
+static bool _IsLeadingDirectPunct(WCHAR en)
+{
+    return en == L',' || en == L'.' || en == L'!' || en == L'?';
+}
+
 // 组合串是否以标点开头（从头选词时，先处理最前面的标点）
 static bool _StartsWithPunct(const std::wstring& s, WCHAR* pPunct)
 {
@@ -626,6 +633,23 @@ STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID rgui
 
 void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WPARAM wParam)
 {
+    // 首字符标点规则：, . ! ?（含全角 ，。！？）不能作为组合串/候选框上的第 1 个字符。
+    // 组合串为空（无拼音、无挂起标点）时直接按当前标点/全半角模式上屏，不进候选流程。
+    if (_mode != IME_MODE_ENGLISH && !_punctPending && !IME_HasComposition())
+    {
+        WCHAR cn = 0, en = 0;
+        if (_MapPunct(wParam, &cn, &en) && _IsLeadingDirectPunct(en))
+        {
+            WCHAR outCh = (_punctMode == IME_PUNCT_FULLWIDTH) ? cn : en;
+            // 英文标点(ASCII)在全角宽度模式下转成对应全角字符
+            if (_punctMode == IME_PUNCT_HALFWIDTH && _widthMode == IME_WIDTH_FULLWIDTH)
+                outCh = IME_ConvertCharWidth((char)outCh);
+            _InsertTextAtSelection(ec, pContext, &outCh, 1);
+            _keyHandledInSession = true;
+            return;
+        }
+    }
+
     // 全角模式：对"直通"的可打印 ASCII 直接转全角插入（不进拼音流程）
     // 英文模式：字母/数字/空格（标点在下方英文分支走引擎）
     // 中文模式：Shift+大写字母、无组合串的数字/空格、未映射符号
