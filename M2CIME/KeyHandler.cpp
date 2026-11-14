@@ -351,7 +351,7 @@ static char _VkToAsciiChar(WPARAM vk)
 
 BOOL CTextService::_IsKeyEaten(WPARAM wParam, bool /*fTest*/)
 {
-    // Shift 永远不消费（用于 OnKeyUp 切换中英文）
+    // Shift 永远不消费（Shift 是修饰键，放行给应用/组合键使用）
     if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)
         return FALSE;
 
@@ -491,16 +491,6 @@ STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* /*pContext*/, WPARAM wParam
 {
     if (!pfEaten) return E_INVALIDARG;
 
-    // Shift 状态跟踪（OnTestKeyDown 对未消费的键也会被调用，适合记录）
-    if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)
-    {
-        _shiftPressed = true;
-        *pfEaten = FALSE;
-        return S_OK;
-    }
-    // 任何其它键按下都取消"单独按 Shift"的判定
-    _shiftPressed = false;
-
     *pfEaten = _IsKeyEaten(wParam, true);
 
     return S_OK;
@@ -517,14 +507,13 @@ STDMETHODIMP CTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM
     // 忽略长按产生的自动重复（lParam 第 30 位），避免一次按键反复切换。
     if (wParam == VK_SPACE && IsShiftSpaceCombo())
     {
-        _shiftPressed = false;   // 防止随后松开 Shift 时再触发中/英文切换
         if ((lParam & (1L << 30)) == 0)
             ToggleWidthMode();
         return S_OK;
     }
 
     // Ctrl+空格：切换 英文 <-> 最近中文模式（普通话/粤语），不上屏任何字符
-    // （与单击 Shift 切换行为一致：英文模式切回 _lastChineseMode，中文模式切到英文）。
+    // （英文模式切回 _lastChineseMode，中文模式切到英文）。
     // 仅当该组合键未被系统"输入法/非输入法切换"热键拦截时才会走到这里（兜底路径）。
     if (wParam == VK_SPACE && IsCtrlSpaceCombo())
     {
@@ -574,23 +563,10 @@ STDMETHODIMP CTextService::OnKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM
     return S_OK;
 }
 
-STDMETHODIMP CTextService::OnTestKeyUp(ITfContext* /*pContext*/, WPARAM wParam, LPARAM /*lParam*/, BOOL* pfEaten)
+STDMETHODIMP CTextService::OnTestKeyUp(ITfContext* /*pContext*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL* pfEaten)
 {
     if (!pfEaten) return E_INVALIDARG;
     *pfEaten = FALSE;
-
-    // Shift 抬起且期间未按其它键：切换 英文 <-> 最近中文模式
-    if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)
-    {
-        if (_shiftPressed)
-        {
-            _shiftPressed = false;
-            if (_mode == IME_MODE_ENGLISH)
-                SetMode(_lastChineseMode);
-            else
-                SetMode(IME_MODE_ENGLISH);
-        }
-    }
     return S_OK;
 }
 
@@ -617,7 +593,7 @@ STDMETHODIMP CTextService::OnPreservedKey(ITfContext* /*pContext*/, REFGUID rgui
         return S_OK;
 
     // Ctrl+空格（保留键）：切换 英文 <-> 最近中文模式（普通话/粤语），不上屏任何字符
-    // （与单击 Shift 切换行为一致：英文模式切回 _lastChineseMode，中文模式切到英文）。
+    // （英文模式切回 _lastChineseMode，中文模式切到英文）。
     // 仅当系统"输入法/非输入法切换"热键被用户改掉/禁用、Ctrl+空格 不再被 imm32 层
     // 拦截时才会由此路径处理（平时走 OnChange 的舱室路径）。
     if (_mode == IME_MODE_ENGLISH)

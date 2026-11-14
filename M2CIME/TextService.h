@@ -155,12 +155,11 @@ private:
     CStatusBar*       _pStatusBar;
 
     ImeInputMode    _mode;              // 当前模式
-    ImeInputMode    _lastChineseMode;   // 最近的中文模式（普通话/粤语），Shift 切回时用
+    ImeInputMode    _lastChineseMode;   // 最近的中文模式（普通话/粤语），Ctrl+空格 切回时用
     ImePunctMode    _punctMode;         // 当前标点模式（中文/英文标点）
     ImeWidthMode    _widthMode;         // 当前字符宽度模式（全角/半角）
     ImeChineseVariant _chineseVariant;  // 当前中文字形（简体/繁体）
     ImePinyinMode   _pinyinMode;        // 当前拼音输入方式（全拼/双拼）
-    bool            _shiftPressed;      // Shift 按下后尚未消费其它键
     bool            _keyHandledInSession; // edit session 中是否消费了按键
     int             _pageIndex;         // 候选翻页页号
 
