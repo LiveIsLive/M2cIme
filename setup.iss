@@ -27,7 +27,9 @@ Source: "M2CIME\x64\Release\M2CIME.dll"; DestDir: "{app}"; Flags: ignoreversion 
 Source: "M2CIME\Release\M2CIME32.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 Source: "M2CIME\M2CIME.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; 外置词库（SQLite 数据库，可用 sqlite3 工具维护，改完重新部署生效）
+; 主词库 + 初始备份库：设置对话框的“重置词库”会从备份库恢复默认数据
 Source: "dicts\m2c_dict.db"; DestDir: "{app}\dicts"; Flags: ignoreversion
+Source: "dicts\m2c_dict.bakup.db"; DestDir: "{app}\dicts"; Flags: ignoreversion
 
 [Run]
 Filename: "{sys}\taskkill.exe"; Parameters: "/f /im ctfmon.exe"; Flags: runhidden waituntilterminated skipifdoesntexist; StatusMsg: "正在关闭语言栏进程..."

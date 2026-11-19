@@ -289,8 +289,10 @@ namespace
         return MixedMatch::None;
     }
 
-    const wchar_t* kDictSubdir = L"dicts";
-    const wchar_t* kDictFile   = L"m2c_dict.db";
+    const wchar_t* kDictSubdir   = L"dicts";
+    const wchar_t* kDictFile     = L"m2c_dict.db";
+    const wchar_t* kBackupFile   = L"m2c_dict.bakup.db";
+    const char*    kBackupSchema = "m2c_bak";
 
     std::wstring GetModuleDir()
     {
@@ -384,6 +386,52 @@ namespace
             sqlite3_finalize(stmt);
         }
         return found;
+    }
+
+    // 列出某个 schema（main 或 ATTACH 进来的备份库）里一张表的列名，保持表定义顺序
+    std::vector<std::string> TableColumns(sqlite3* db, const char* schema, const char* table)
+    {
+        std::vector<std::string> cols;
+        const std::string sql = std::string("PRAGMA ") + schema + ".table_info(" + table + ")";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return cols;
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            const unsigned char* name = sqlite3_column_text(stmt, 1);
+            if (name) cols.emplace_back(reinterpret_cast<const char*>(name));
+        }
+        sqlite3_finalize(stmt);
+        return cols;
+    }
+
+    std::string QuoteIdentifier(const std::string& name)
+    {
+        std::string out = "\"";
+        for (char c : name)
+        {
+            if (c == '"') out += '"';
+            out += c;
+        }
+        out += '"';
+        return out;
+    }
+
+    // 生成 INSERT INTO <table>(共同列) SELECT <共同列> FROM backup.<table>
+    // 只复制两边都存在的列，缺失的列使用目标表默认值（例如 word_trad / library_id）
+    std::string MakeCopySql(const std::vector<std::string>& dstCols,
+                            const std::vector<std::string>& srcCols,
+                            const char* table)
+    {
+        std::string cols;
+        for (const auto& col : dstCols)
+        {
+            if ((std::find(srcCols.begin(), srcCols.end(), col) == srcCols.end())) continue;
+            if (!cols.empty()) cols += ", ";
+            cols += QuoteIdentifier(col);
+        }
+        if (cols.empty()) return std::string();
+        return std::string("INSERT INTO ") + table + " (" + cols + ") SELECT " + cols +
+               " FROM " + kBackupSchema + "." + table;
     }
 
     // ---------- QCEL 解析 ----------
@@ -1066,6 +1114,119 @@ bool Dictionary::ImportQcelLibrary(const std::wstring& qcelPath, std::wstring& o
     sqlite3_finalize(ins);
     ExecSql(db, "COMMIT;");
     sqlite3_close(db);
+
+    Reload();
+    return true;
+}
+
+bool Dictionary::ResetDictionaryFromBackup(std::wstring& error)
+{
+    error.clear();
+    EnsureLoaded();
+    if (dbPath_.empty())
+    {
+        error = L"未找到当前词库数据库";
+        return false;
+    }
+
+    // 备份库与当前库放在同一目录（安装后为 {app}\dicts\）
+    const size_t slash = dbPath_.find_last_of(L"\\/");
+    const std::wstring backupPath =
+        (slash == std::wstring::npos ? std::wstring() : dbPath_.substr(0, slash + 1)) + kBackupFile;
+    if (!FileExists(backupPath))
+    {
+        error = L"找不到备份词库文件：\n" + backupPath;
+        return false;
+    }
+
+    sqlite3* db = nullptr;
+    std::wstring currentPath;
+    if (!OpenWritableDb(&db, currentPath))
+    {
+        error = L"无法打开当前词库数据库：\n" + currentPath;
+        return false;
+    }
+
+    auto hasBackupTable = [db](const char* table)
+    {
+        const std::string sql = std::string("SELECT 1 FROM ") + kBackupSchema + "." + table + " LIMIT 1";
+        sqlite3_stmt* probe = nullptr;
+        const int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &probe, nullptr);
+        if (probe) sqlite3_finalize(probe);
+        return rc == SQLITE_OK;
+    };
+
+    bool attached = false;
+    bool inTransaction = false;
+    bool ok = false;
+    std::string err8;
+    do
+    {
+        // 先把当前库升级到最新 schema，再按两边共有的列复制，兼容旧版备份库
+        if (!EnsureSchema(db)) { err8 = sqlite3_errmsg(db); break; }
+
+        const std::string backup8 = WideToUtf8(backupPath);
+        sqlite3_stmt* stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db, "ATTACH DATABASE ?1 AS m2c_bak", -1, &stmt, nullptr);
+        if (rc == SQLITE_OK) rc = sqlite3_bind_text(stmt, 1, backup8.c_str(), -1, SQLITE_TRANSIENT);
+        if (rc == SQLITE_OK) rc = sqlite3_step(stmt);
+        if (stmt) sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) { err8 = sqlite3_errmsg(db); break; }
+        attached = true;
+
+        if (!TableExists(db, "entries") || !TableExists(db, "libraries") ||
+            !hasBackupTable("entries") || !hasBackupTable("libraries"))
+        {
+            err8 = "当前词库或备份词库缺少 entries/libraries 表";
+            break;
+        }
+
+        const auto mainEntries = TableColumns(db, "main", "entries");
+        const auto mainLibs    = TableColumns(db, "main", "libraries");
+        const auto bakEntries  = TableColumns(db, kBackupSchema, "entries");
+        const auto bakLibs     = TableColumns(db, kBackupSchema, "libraries");
+        const std::string copyEntries = MakeCopySql(mainEntries, bakEntries, "entries");
+        const std::string copyLibs    = MakeCopySql(mainLibs, bakLibs, "libraries");
+        if (copyEntries.empty() || copyLibs.empty())
+        {
+            err8 = "当前词库与备份词库的表结构不兼容";
+            break;
+        }
+
+        if (!ExecSql(db, "BEGIN IMMEDIATE;")) { err8 = sqlite3_errmsg(db); break; }
+        inTransaction = true;
+
+        // 先清空词库相关表（顺序：词条 -> 词库），再整表导入备份数据
+        if (!ExecSql(db, "DELETE FROM entries;") ||
+            !ExecSql(db, "DELETE FROM libraries;"))
+        { err8 = sqlite3_errmsg(db); break; }
+        // 清掉 AUTOINCREMENT 计数，避免恢复后新建词库的 id 与备份数据冲突
+        if (TableExists(db, "sqlite_sequence") &&
+            !ExecSql(db, "DELETE FROM sqlite_sequence WHERE name='libraries';"))
+        { err8 = sqlite3_errmsg(db); break; }
+
+        if (!ExecSql(db, copyLibs.c_str()) || !ExecSql(db, copyEntries.c_str()))
+        { err8 = sqlite3_errmsg(db); break; }
+
+        if (!ExecSql(db, "COMMIT;")) { err8 = sqlite3_errmsg(db); break; }
+        inTransaction = false;
+
+        // 若备份库较旧、缺少 library_id 等列，这里补建默认值并回填归属词库
+        if (!EnsureSchema(db)) { err8 = sqlite3_errmsg(db); break; }
+        ok = true;
+    } while (false);
+
+    if (!ok && inTransaction) ExecSql(db, "ROLLBACK;");
+    if (attached) ExecSql(db, "DETACH DATABASE m2c_bak;");
+    sqlite3_close(db);
+
+    if (!ok)
+    {
+        error = L"重置词库失败：";
+        if (!err8.empty()) error += Utf8ToWide(err8);
+        else error += L"未知错误";
+        return false;
+    }
 
     Reload();
     return true;

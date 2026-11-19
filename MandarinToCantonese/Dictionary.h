@@ -76,6 +76,8 @@ public:
     bool MoveMandarinLibrary(long long id, int direction); // direction: -1 上移, +1 下移
     bool DeleteMandarinLibrary(long long id, std::wstring& error);
     bool ImportQcelLibrary(const std::wstring& qcelPath, std::wstring& outName, std::wstring& error);
+    // 用同目录下的 m2c_dict.bakup.db 恢复词库表（先清空 entries/libraries，再整表导入）
+    bool ResetDictionaryFromBackup(std::wstring& error);
     std::wstring GetDatabasePath() const { return dbPath_; }
 
     // 重新加载词库（管理操作后调用）

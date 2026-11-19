@@ -14,6 +14,7 @@
 
 #define IDC_INPUT_MODE_COMBO    1001
 #define IDC_MANAGE_DICTS_BTN    1002
+#define IDC_RESET_DICTS_BTN     1003
 
 // Dictionary manager dialog
 #define IDC_DICT_LIST           1101

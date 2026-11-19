@@ -309,6 +309,28 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
             ShowDictManagerDialog(hDlg);
             return TRUE;
         }
+        if (LOWORD(wParam) == IDC_RESET_DICTS_BTN)
+        {
+            const int answer = MessageBoxW(hDlg,
+                L"重置词库会清空当前词库（包括自行导入的词库和顺序），"
+                L"并用安装目录下的备份词库恢复默认数据。\n\n确定要继续吗？",
+                L"重置词库", MB_OKCANCEL | MB_ICONWARNING);
+            if (answer != IDOK) return TRUE;
+
+            std::wstring error;
+            if (!Dictionary::Instance().ResetDictionaryFromBackup(error))
+            {
+                if (error.empty()) error = L"重置失败";
+                MessageBoxW(hDlg, error.c_str(), L"重置词库", MB_OK | MB_ICONERROR);
+            }
+            else
+            {
+                MessageBoxW(hDlg,
+                    L"词库已重置为默认数据。\n若其他已打开的程序仍使用旧词库，请重启该程序。",
+                    L"重置词库", MB_OK | MB_ICONINFORMATION);
+            }
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDCANCEL)
         {
             EndDialog(hDlg, IDCANCEL);
