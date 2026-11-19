@@ -128,6 +128,14 @@ __declspec(dllexport) void IME_ClearComposition();
 // 引擎是否处于有组合串的输入状态
 __declspec(dllexport) bool IME_HasComposition();
 
+// 导入 QQ 拼音词库（.qcel），作为新的普通话词库追加到词库列表末尾。
+// path: 词库文件路径；nameBuf/errorBuf 用于返回词库名/错误信息（可为空）。
+// 返回 true 表示导入成功。
+__declspec(dllexport) bool IME_ImportQcelLibrary(
+    const wchar_t* path,
+    wchar_t* nameBuf, int nameBufLen,
+    wchar_t* errorBuf, int errorBufLen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -4,10 +4,14 @@
 #include "third_party/sqlite/sqlite3.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <cwctype>
+#include <fstream>
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -24,8 +28,6 @@ namespace
     }
 
     // 首音节是否为「鼻音自成音节」：n / ng / m / hm / hng（如「嗯」「呒」）。
-    // 这类音节属于韵母性质（嗯=en/ng），没有真正的声母，
-    // 输入单字母 n / m 时应排在真正声母字（你、那、吗、们…）之后。
     bool IsNasalOnlyPinyin(const std::string& pinyin)
     {
         if (pinyin.size() == 1) return pinyin == "n" || pinyin == "m";
@@ -88,7 +90,6 @@ namespace
     }
 
     // 输入串已打到第几个音节：音节起始位置落在输入串内的都算已进入
-    //（如 豆瓣 dou|ban 输入 douba 时覆盖 2 个音节，输入 dou 时只覆盖 1 个）
     size_t CoveredSyllableCount(const std::string& sylLens, size_t queryLen)
     {
         size_t covered = 0;
@@ -102,21 +103,13 @@ namespace
         return covered;
     }
 
-    // 输入串已经开始的音节数，即声母个数，用于限制候选词的字数：
-    //   "suoyou" -> suo + you        -> 2（s + y）
-    //   "suoy"   -> suo + y(未输完)  -> 2
-    //   "nihaom" -> ni + hao + m(未输完) -> 3
-    //   "jx"     -> 纯声母串         -> 2（每个声母字母算一个）
+    // 输入串已经开始的音节数，即声母个数
     size_t CountInputInitials(const std::string& query)
     {
-        // 声母字母（含 zh/ch/sh 的 z/c/s、零声母音节的 y/w）
         static const char kInitialLetters[] = "bpmfdtnlgkhjqxzcsryw";
-
         std::string remainder;
         const auto syllables = PinyinSegmenter::Segment(query, &remainder);
-
         size_t count = syllables.size();
-        // 尾部尚未成型的音节：每个声母字母代表又开了一个音节（如 nhao 的 n、h）
         for (char c : remainder)
         {
             if (std::string(kInitialLetters).find(c) != std::string::npos)
@@ -137,29 +130,16 @@ namespace
         return 1;
     }
 
-    // 是否声母字母（不含 a/e/i/o/u 等韵母字母；v 仅作 ü 的输入替代，不作为声母）
     bool IsInitialLetter(char c)
     {
         static const char kInitialLetters[] = "bpmfdtnlgkhjqxzcsryw";
         return std::strchr(kInitialLetters, c) != nullptr;
     }
 
-    // 按「候选词生成规则」把输入切分为「独立声母 / 完整拼音音节」，并尝试与词条逐音节对应：
-    //   - 独立声母：单个辅音字母，对应下一个汉字的声母（zh/ch/sh 可只写 z/c/s）；
-    //     也可写完整 zh/ch/sh（两个字符合成一个声母）。
-    //   - 完整拼音音节：必须与下一个汉字的拼音完全相同（不能只写一部分）。
-    // 词条所有音节都能匹配时，返回本次匹配实际消耗的输入字母数（即覆盖长度）；
-    // 否则返回 0。多个切分方式都能匹配时取消耗最长的一种（便于按覆盖长度排序）。
-    //
-    // 例：nmzshuoshenme
-    //   可切为  n m z shuo shen me  （声母 nmz + 完整拼音 shuoshenme）
-    //   也可切为 n m z s huo shen me（声母 nmzs + 完整拼音 huoshenme）
-    // 返回值即最后一个音节结束的位置。
+    // 按「候选词生成规则」把输入切分为「独立声母 / 完整拼音音节」，尝试与词条逐音节对应
     size_t RuleConsume(const DictEntry& e, const std::string& input)
     {
         if (e.sylLens.empty() || input.empty()) return 0;
-
-        // 组合串不会太长；超出上限时不做规则匹配（避免栈上定长数组越界）
         constexpr size_t kMaxInput = 127;
         if (input.size() > kMaxInput) return 0;
 
@@ -188,9 +168,7 @@ namespace
                     any = true;
                 }
 
-                // 2) 单字母声母（zh/ch/sh 用 z/c/s 简写）。
-                //    零声母音节（如 an / er / ai）没有辅音声母，沿用词库 initials 的约定，
-                //    用音节首字母（a/e/o）代表该音节，便于与 QueryOnce 的声母简拼保持一致。
+                // 2) 单字母声母
                 const char c = input[pos];
                 if (c == e.pinyin[off] &&
                     (IsInitialLetter(c) || !IsInitialLetter(e.pinyin[off])))
@@ -199,9 +177,7 @@ namespace
                     any = true;
                 }
 
-                // 3) 完整声母 zh/ch/sh（两个字符合成一个声母）。
-                //    仅当它位于输入末尾或后面紧跟声母时才算“独立声母”；
-                //    若后面跟的是韵母（如 shuo 的 uo），它应作为完整音节的一部分。
+                // 3) 完整声母 zh/ch/sh
                 if (pos + 1 < input.size())
                 {
                     const char c0 = input[pos];
@@ -224,33 +200,22 @@ namespace
             off += len;
         }
 
-        // 所有音节都匹配成功，取最远的结束位置作为覆盖长度
         for (size_t p = input.size(); p >= 1; --p)
             if (cur[p]) return p;
         return 0;
     }
 
-    // 按输入模式给词条加权（普通话音库与粤语词库的隔离规则）。
-    long long ModeScore(const DictEntry& e, int mode)
+    // 当前输入模式下各来源的优先层级：1 = 优先，0 = 靠后。
+    // 普通话模式优先普通话词库，粤语模式优先粤语词库。
+    int SourceTier(const DictEntry& e, int mode)
     {
-        // kBoost 必须大于任何词条权重（外置普通话词库权重可达数百万）。
-        const long long kBoost = 1000000000000LL; // 1e12
-        const long long w = e.weight;
-        if (mode == 1) // 粤语模式
-            return (e.source == LangSource::Cantonese) ? (w + kBoost) : w;
-        else            // 普通话模式
-            return (e.source == LangSource::Mandarin) ? (w + kBoost) : (w - kBoost);
+        if (mode == 1)
+            return (e.source == LangSource::Cantonese) ? 1 : 0;
+        return (e.source == LangSource::Mandarin) ? 1 : 0;
     }
 
-    // 声母简拼匹配结果：
-    //   None   —— 不匹配
-    //   Prefix —— 已匹配若干音节，输入串用完但词还有剩余音节（如 sm -> 说明书）
-    //   Full   —— 输入串正好覆盖全部音节（如 sms / shmsh -> 说明书）
     enum class InitialsMatch { None, Prefix, Full };
 
-    // 逐音节匹配声母简拼。每个音节的声母既可写完整形式（zh/ch/sh 两个字母），
-    // 也可只写首字母（z/c/s 分别代表 zh/ch/sh），
-    // 因此「说明书」(shuo ming shu) 用 shmsh 或 sms 都能命中。
     InitialsMatch MatchInitials(const std::string& pinyin, const std::string& sylLens,
                                 const std::string& query)
     {
@@ -267,13 +232,11 @@ namespace
                 return (i > 0) ? InitialsMatch::Prefix : InitialsMatch::None;
 
             const size_t initialLen = InitialLenAt(pinyin, off, len);
-            // 1) 完整声母（zh / ch / sh 两个字母）
             if (initialLen > 1 && qpos + initialLen <= query.size() &&
                 query.compare(qpos, initialLen, pinyin, off, initialLen) == 0)
             {
                 qpos += initialLen;
             }
-            // 2) 首字母声母（z / c / s 也可代表 zh / ch / sh）
             else if (query[qpos] == pinyin[off])
             {
                 ++qpos;
@@ -287,14 +250,8 @@ namespace
         return (qpos == query.size()) ? InitialsMatch::Full : InitialsMatch::None;
     }
 
-    // 混拼匹配结果：
-    //   None    —— 不匹配
-    //   Partial —— 已完整匹配部分音节，尾部仍在输入（如 ni + h -> 你好）
-    //   Full    —— 所有音节都匹配且输入串刚好用完（如 n + hao 或 ni + h -> 你好）
     enum class MixedMatch { None, Partial, Full };
 
-    // 逐音节匹配组合串：每个音节既可以全拼匹配，也可以用声母匹配（混拼），
-    // 尾部允许只输入了音节的一部分。idx 为音节序号，off 为音节在 pinyin 中的偏移。
     MixedMatch MatchMixedRec(const std::string& pinyin, const std::string& sylLens,
                              size_t idx, size_t off,
                              const std::string& query, size_t qpos)
@@ -309,26 +266,22 @@ namespace
         const size_t len = (size_t)(unsigned char)sylLens[idx];
         const size_t initialLen = InitialLenAt(pinyin, off, len);
 
-        // 1) 该音节全拼（如 nihao 的 hao）
         if (qpos + len <= query.size() && query.compare(qpos, len, pinyin, off, len) == 0)
         {
             const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + len);
             if (r != MixedMatch::None) return r;
         }
-        // 2) 该音节声母（如 nihao 的 n / h）
         if (qpos + initialLen <= query.size() &&
             query.compare(qpos, initialLen, pinyin, off, initialLen) == 0)
         {
             const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + initialLen);
             if (r != MixedMatch::None) return r;
         }
-        // 2b) zh/ch/sh 只输入首字母（如 sms 的最后一个 s 代表「书」的 sh）
         if (initialLen > 1 && qpos < query.size() && query[qpos] == pinyin[off])
         {
             const MixedMatch r = MatchMixedRec(pinyin, sylLens, idx + 1, off + len, query, qpos + 1);
             if (r != MixedMatch::None) return r;
         }
-        // 3) 该音节只输入了一部分（正在输入中，如 nha 里的 ha）
         const size_t rest = query.size() - qpos;
         if (idx > 0 && rest < len && pinyin.compare(off, rest, query, qpos, rest) == 0)
             return MixedMatch::Partial;
@@ -336,11 +289,9 @@ namespace
         return MixedMatch::None;
     }
 
-    // 外置词库文件名（相对于 DLL 所在目录 / 安装目录）
     const wchar_t* kDictSubdir = L"dicts";
     const wchar_t* kDictFile   = L"m2c_dict.db";
 
-    // 获取当前 DLL 所在目录（词库相对安装目录定位）
     std::wstring GetModuleDir()
     {
         HMODULE hMod = nullptr;
@@ -364,7 +315,6 @@ namespace
         return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
     }
 
-    // UTF-8 -> UTF-16
     std::wstring Utf8ToWide(const std::string& s)
     {
         if (s.empty()) return L"";
@@ -375,7 +325,6 @@ namespace
         return w;
     }
 
-    // UTF-16 -> UTF-8（SQLite 需要 UTF-8 路径）
     std::string WideToUtf8(const std::wstring& w)
     {
         if (w.empty()) return std::string();
@@ -385,7 +334,210 @@ namespace
         WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
         return s;
     }
-}
+
+    std::wstring Trim(const std::wstring& s)
+    {
+        size_t a = 0, b = s.size();
+        while (a < b && iswspace(s[a])) ++a;
+        while (b > a && iswspace(s[b - 1])) --b;
+        return s.substr(a, b - a);
+    }
+
+    bool ExecSql(sqlite3* db, const char* sql)
+    {
+        char* err = nullptr;
+        int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+        return rc == SQLITE_OK;
+    }
+
+    bool ColumnExists(sqlite3* db, const char* table, const char* column)
+    {
+        std::string sql = "PRAGMA table_info(" + std::string(table) + ")";
+        sqlite3_stmt* stmt = nullptr;
+        bool found = false;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            while (sqlite3_step(stmt) == SQLITE_ROW)
+            {
+                const unsigned char* name = sqlite3_column_text(stmt, 1);
+                if (name && std::strcmp(reinterpret_cast<const char*>(name), column) == 0)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        return found;
+    }
+
+    bool TableExists(sqlite3* db, const char* table)
+    {
+        sqlite3_stmt* stmt = nullptr;
+        bool found = false;
+        if (sqlite3_prepare_v2(db,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?1", -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            sqlite3_bind_text(stmt, 1, table, -1, SQLITE_TRANSIENT);
+            found = (sqlite3_step(stmt) == SQLITE_ROW);
+            sqlite3_finalize(stmt);
+        }
+        return found;
+    }
+
+    // ---------- QCEL 解析 ----------
+    uint32_t ReadU32(const std::vector<uint8_t>& b, size_t off)
+    {
+        if (off + 4 > b.size()) return 0;
+        return (uint32_t)b[off] | ((uint32_t)b[off + 1] << 8) |
+               ((uint32_t)b[off + 2] << 16) | ((uint32_t)b[off + 3] << 24);
+    }
+    uint16_t ReadU16(const std::vector<uint8_t>& b, size_t off)
+    {
+        if (off + 2 > b.size()) return 0;
+        return (uint16_t)b[off] | ((uint16_t)b[off + 1] << 8);
+    }
+    std::wstring ReadUtf16Z(const std::vector<uint8_t>& b, size_t off, size_t maxBytes)
+    {
+        std::wstring out;
+        size_t end = (std::min)(b.size(), off + maxBytes);
+        for (size_t i = off; i + 1 < end; i += 2)
+        {
+            wchar_t ch = (wchar_t)(b[i] | (b[i + 1] << 8));
+            if (ch == 0) break;
+            out.push_back(ch);
+        }
+        return out;
+    }
+
+    bool ParseQcel(const std::wstring& path, std::wstring& outName,
+                   std::vector<std::pair<std::string, std::wstring>>& outPairs,
+                   std::wstring& error)
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+        {
+            error = L"无法打开词库文件";
+            return false;
+        }
+        std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+        // QQ 拼音 6.0+ 的 .qcel 与搜狗 .scel 基本相同：
+        //   0x0000  4 字节魔数 0x00001540（字节序列 40 15 00 00）
+        //   0x0120  不展开重码的词条数
+        //   0x0124  展开重码后的词数
+        //   0x0130  词库名（UTF-16LE，NUL 结尾）
+        //   0x1540  拼音表：u16 数量 + 2 字节保留，随后每条 (u16 索引, u16 字节长度, UTF-16LE 拼音)
+        //   拼音表之后是词表：u16 重码数 + u16 拼音索引数组字节长度 + 索引数组，
+        //   然后每个词：u16 词字节长度 + UTF-16LE 词 + u16 扩展信息字节长度 + 扩展信息
+        if (buf.size() < 0x1544 || ReadU32(buf, 0) != 0x00001540)
+        {
+            error = L"不是有效的QQ拼音词库(.qcel)文件";
+            return false;
+        }
+
+        outName = Trim(ReadUtf16Z(buf, 0x130, 0x208));
+        if (outName.empty())
+        {
+            size_t slash = path.find_last_of(L"\\/");
+            std::wstring file = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+            size_t dot = file.find_last_of(L'.');
+            outName = (dot == std::wstring::npos) ? file : file.substr(0, dot);
+        }
+        if (outName.empty()) outName = L"导入的QQ拼音词库";
+
+        // ===== 拼音表（固定从 0x1540 开始）=====
+        size_t pos = 0x1540;
+        const uint32_t pinyinCount = ReadU32(buf, pos); // SCEL/qcel 为 32 位数量
+        pos += 4; // 跳过数量与 2 字节保留
+
+        std::vector<std::string> pinyins(pinyinCount);
+        for (uint32_t i = 0; i < pinyinCount; ++i)
+        {
+            if (pos + 4 > buf.size()) break;
+            const uint16_t idx = ReadU16(buf, pos); pos += 2;
+            const uint16_t len = ReadU16(buf, pos); pos += 2;
+            if (pos + len > buf.size()) { pos = buf.size(); break; }
+
+            std::wstring syllable = ReadUtf16Z(buf, pos, len);
+            pos += len;
+
+            std::string py;
+            py.reserve(syllable.size());
+            for (wchar_t wc : syllable)
+            {
+                if (wc >= L'A' && wc <= L'Z') wc = (wchar_t)(wc - L'A' + L'a');
+                if (wc >= 0x20 && wc < 0x7F) py.push_back((char)wc);
+            }
+            if (idx < pinyins.size()) pinyins[idx] = py;
+        }
+
+        // ===== 词表（紧接拼音表之后）=====
+        size_t wordPos = pos;
+        uint32_t blockCount = ReadU32(buf, 0x120);
+        if (blockCount == 0) blockCount = ReadU32(buf, 0x124);
+        // 防止损坏文件给出离谱的块数
+        if (blockCount > buf.size() / 6 + 1)
+            blockCount = (uint32_t)(buf.size() / 6 + 1);
+
+        for (uint32_t block = 0; block < blockCount; ++block)
+        {
+            if (wordPos + 4 > buf.size()) break;
+            const uint16_t repeat = ReadU16(buf, wordPos); wordPos += 2;
+            const uint16_t pyBytes = ReadU16(buf, wordPos); wordPos += 2;
+            if (wordPos + pyBytes > buf.size()) break;
+
+            std::string py;
+            for (uint16_t k = 0; k + 1 < pyBytes; k += 2)
+            {
+                const uint16_t idx = ReadU16(buf, wordPos + k);
+                if (idx < pinyins.size())
+                {
+                    py += pinyins[idx];
+                }
+                else if (idx < pinyins.size() + 26)
+                {
+                    // 部分带英文的词库把 a-z 依次放在拼音表末尾之后
+                    py.push_back((char)('a' + (idx - pinyins.size())));
+                }
+            }
+            wordPos += pyBytes;
+
+            std::string key;
+            key.reserve(py.size());
+            for (char c : py)
+            {
+                if (c == ' ' || c == '\'') continue;
+                key.push_back((char)tolower((unsigned char)c));
+            }
+
+            for (uint16_t w = 0; w < repeat; ++w)
+            {
+                if (wordPos + 2 > buf.size()) { wordPos = buf.size(); break; }
+                const uint16_t wordBytes = ReadU16(buf, wordPos); wordPos += 2;
+                if (wordPos + wordBytes > buf.size()) { wordPos = buf.size(); break; }
+                std::wstring word = ReadUtf16Z(buf, wordPos, wordBytes);
+                wordPos += wordBytes;
+
+                if (wordPos + 2 > buf.size()) { wordPos = buf.size(); break; }
+                const uint16_t extBytes = ReadU16(buf, wordPos); wordPos += 2;
+                if (wordPos + extBytes > buf.size()) { wordPos = buf.size(); break; }
+                wordPos += extBytes;
+
+                if (!word.empty() && !key.empty())
+                    outPairs.emplace_back(key, word);
+            }
+        }
+
+        if (outPairs.empty())
+        {
+            error = L"词库中没有可导入的词条";
+            return false;
+        }
+        return true;
+    }
+} // namespace
 
 Dictionary& Dictionary::Instance()
 {
@@ -406,14 +558,167 @@ void Dictionary::LoadExternal()
     const std::wstring dir = GetModuleDir();
     if (dir.empty()) return;
 
-    // 优先查找 <DLL目录>\dicts\m2c_dict.db，其次查找 <DLL目录> 本身
     std::wstring path = dir + L"\\" + kDictSubdir + L"\\" + kDictFile;
     if (!FileExists(path))
     {
         path = dir + L"\\" + kDictFile;
         if (!FileExists(path)) return;
     }
+    dbPath_ = path;
+
+    // migrate schema if needed (requires write access)
+    sqlite3* db = nullptr;
+    const std::string dbPath8 = WideToUtf8(path);
+    if (sqlite3_open_v2(dbPath8.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK)
+    {
+        ExecSql(db, "PRAGMA busy_timeout=2000;");
+        EnsureSchema(db);
+        sqlite3_close(db);
+    }
+    else
+    {
+        if (db) sqlite3_close(db);
+    }
+
     LoadFromDatabase(path);
+}
+
+bool Dictionary::EnsureSchema(sqlite3* db)
+{
+    if (!TableExists(db, "libraries"))
+    {
+        // if entries has library_id maybe partial; but simplest: create and migrate
+        if (!ExecSql(db,
+            "CREATE TABLE IF NOT EXISTS libraries ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " name TEXT NOT NULL,"
+            " type INTEGER NOT NULL,"          // 0 mandarin, 1 cantonese
+            " sort_order INTEGER NOT NULL DEFAULT 0"
+            ");"))
+            return false;
+    }
+
+    if (!ColumnExists(db, "entries", "library_id"))
+    {
+        if (!ExecSql(db, "ALTER TABLE entries ADD COLUMN library_id INTEGER;"))
+            return false;
+    }
+
+    MigrateLegacyIfNeeded(db);
+    ExecSql(db, "CREATE INDEX IF NOT EXISTS entries_library_idx ON entries(library_id);");
+    return true;
+}
+
+bool Dictionary::MigrateLegacyIfNeeded(sqlite3* db)
+{
+    // if no libraries exist, create defaults and assign entries
+    sqlite3_stmt* stmt = nullptr;
+    int libCount = 0;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM libraries", -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        if (sqlite3_step(stmt) == SQLITE_ROW) libCount = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+    if (libCount > 0)
+    {
+        // ensure default names exist? leave as-is
+        // but assign any NULL library_id
+        ExecSql(db, "BEGIN;");
+        // find mandarin/cantonese default ids
+        long long mandarinId = 0, cantoneseId = 0;
+        if (sqlite3_prepare_v2(db, "SELECT id,type FROM libraries ORDER BY sort_order,id", -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            while (sqlite3_step(stmt) == SQLITE_ROW)
+            {
+                long long id = sqlite3_column_int64(stmt, 0);
+                int type = sqlite3_column_int(stmt, 1);
+                if (type == 0 && mandarinId == 0) mandarinId = id;
+                if (type == 1 && cantoneseId == 0) cantoneseId = id;
+            }
+            sqlite3_finalize(stmt);
+        }
+        // create missing defaults
+        if (mandarinId == 0)
+        {
+            sqlite3_stmt* ins = nullptr;
+            sqlite3_prepare_v2(db, "INSERT INTO libraries(name,type,sort_order) VALUES(?1,0,0)", -1, &ins, nullptr);
+            sqlite3_bind_text(ins, 1, WideToUtf8(L"默认普通话词库").c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(ins); sqlite3_finalize(ins);
+            mandarinId = sqlite3_last_insert_rowid(db);
+        }
+        if (cantoneseId == 0)
+        {
+            sqlite3_stmt* ins = nullptr;
+            sqlite3_prepare_v2(db, "INSERT INTO libraries(name,type,sort_order) VALUES(?1,1,0)", -1, &ins, nullptr);
+            sqlite3_bind_text(ins, 1, WideToUtf8(L"默认粤语词库").c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(ins); sqlite3_finalize(ins);
+            cantoneseId = sqlite3_last_insert_rowid(db);
+        }
+        // assign nulls by source
+        sqlite3_stmt* upd = nullptr;
+        if (sqlite3_prepare_v2(db, "UPDATE entries SET library_id=?1 WHERE library_id IS NULL AND source=0", -1, &upd, nullptr)==SQLITE_OK)
+        { sqlite3_bind_int64(upd,1,mandarinId); sqlite3_step(upd); sqlite3_finalize(upd); }
+        if (sqlite3_prepare_v2(db, "UPDATE entries SET library_id=?1 WHERE library_id IS NULL AND source=1", -1, &upd, nullptr)==SQLITE_OK)
+        { sqlite3_bind_int64(upd,1,cantoneseId); sqlite3_step(upd); sqlite3_finalize(upd); }
+        // ensure names of first defaults if empty? update to defaults for migration naming requirement
+        ExecSql(db, "COMMIT;");
+        return true;
+    }
+
+    ExecSql(db, "BEGIN;");
+
+    // create default libraries with required names
+    long long mandarinId = 0, cantoneseId = 0;
+    {
+        sqlite3_stmt* ins = nullptr;
+        sqlite3_prepare_v2(db, "INSERT INTO libraries(name,type,sort_order) VALUES(?1,0,0)", -1, &ins, nullptr);
+        sqlite3_bind_text(ins, 1, WideToUtf8(L"默认普通话词库").c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(ins); sqlite3_finalize(ins);
+        mandarinId = sqlite3_last_insert_rowid(db);
+    }
+    {
+        sqlite3_stmt* ins = nullptr;
+        sqlite3_prepare_v2(db, "INSERT INTO libraries(name,type,sort_order) VALUES(?1,1,0)", -1, &ins, nullptr);
+        sqlite3_bind_text(ins, 1, WideToUtf8(L"默认粤语词库").c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(ins); sqlite3_finalize(ins);
+        cantoneseId = sqlite3_last_insert_rowid(db);
+    }
+
+    {
+        sqlite3_stmt* upd = nullptr;
+        sqlite3_prepare_v2(db, "UPDATE entries SET library_id=?1 WHERE source=0", -1, &upd, nullptr);
+        sqlite3_bind_int64(upd, 1, mandarinId);
+        sqlite3_step(upd); sqlite3_finalize(upd);
+    }
+    {
+        sqlite3_stmt* upd = nullptr;
+        sqlite3_prepare_v2(db, "UPDATE entries SET library_id=?1 WHERE source=1", -1, &upd, nullptr);
+        sqlite3_bind_int64(upd, 1, cantoneseId);
+        sqlite3_step(upd); sqlite3_finalize(upd);
+    }
+
+    ExecSql(db, "COMMIT;");
+    return true;
+}
+
+bool Dictionary::OpenWritableDb(sqlite3** outDb, std::wstring& outPath) const
+{
+    *outDb = nullptr;
+    outPath = dbPath_;
+    if (outPath.empty())
+    {
+        const std::wstring dir = GetModuleDir();
+        if (!dir.empty()) outPath = dir + L"\\" + kDictSubdir + L"\\" + kDictFile;
+    }
+    if (outPath.empty()) return false;
+    const std::string dbPath8 = WideToUtf8(outPath);
+    if (sqlite3_open_v2(dbPath8.c_str(), outDb, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK)
+    {
+        if (*outDb) { sqlite3_close(*outDb); *outDb = nullptr; }
+        return false;
+    }
+    ExecSql(*outDb, "PRAGMA busy_timeout=2000;");
+    return true;
 }
 
 bool Dictionary::LoadFromDatabase(const std::wstring& path)
@@ -426,25 +731,43 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
         return false;
     }
 
-    // 新词库带 word_trad 列（OpenCC 预生成的繁体写法）；
-    // 兼容旧词库：没有该列时按简体原样加载，运行时再走 Windows 兜底映射。
     sqlite3_stmt* probe = nullptr;
     const bool hasTrad =
         sqlite3_prepare_v2(db, "SELECT word_trad FROM entries LIMIT 1", -1, &probe, nullptr) == SQLITE_OK;
     if (probe) sqlite3_finalize(probe);
+    const bool hasLib = TableExists(db, "libraries") && ColumnExists(db, "entries", "library_id");
 
-    // id 即导入顺序（普通话在前、粤语在后），
-    // 按它读入可保持与原文本词库一致的同权重排序。
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = hasTrad
-        ? "SELECT word, word_trad, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
-          " FROM entries ORDER BY id"
-        : "SELECT word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
-          " FROM entries ORDER BY id";
+    const char* sql = nullptr;
+    if (hasLib && hasTrad)
+    {
+        sql = "SELECT e.word, e.word_trad, e.pinyin, e.initials, e.syl_lens, e.weight, e.source,"
+              " e.nasal_only, e.valid_pinyin, COALESCE(l.sort_order,0) AS lib_prio, COALESCE(l.type,e.source) AS lib_type"
+              " FROM entries e LEFT JOIN libraries l ON e.library_id = l.id"
+              " ORDER BY e.id";
+    }
+    else if (hasLib)
+    {
+        sql = "SELECT e.word, e.pinyin, e.initials, e.syl_lens, e.weight, e.source,"
+              " e.nasal_only, e.valid_pinyin, COALESCE(l.sort_order,0) AS lib_prio, COALESCE(l.type,e.source) AS lib_type"
+              " FROM entries e LEFT JOIN libraries l ON e.library_id = l.id"
+              " ORDER BY e.id";
+    }
+    else if (hasTrad)
+    {
+        sql = "SELECT word, word_trad, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
+              " FROM entries ORDER BY id";
+    }
+    else
+    {
+        sql = "SELECT word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
+              " FROM entries ORDER BY id";
+    }
 
     size_t added = 0;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
     {
+        entries_.clear();
         entries_.reserve(70000);
 
         while (sqlite3_step(stmt) == SQLITE_ROW)
@@ -457,8 +780,7 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
             if (hasTrad)
             {
                 const unsigned char* trad8 = sqlite3_column_text(stmt, col++);
-                if (trad8)
-                    wordTrad = Utf8ToWide(reinterpret_cast<const char*>(trad8));
+                if (trad8) wordTrad = Utf8ToWide(reinterpret_cast<const char*>(trad8));
             }
 
             const unsigned char* pinyin8 = sqlite3_column_text(stmt, col++);
@@ -479,17 +801,26 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
             const int nasalOnly = sqlite3_column_int(stmt, col++);
             const int validPinyin = sqlite3_column_int(stmt, col++);
 
-            entries_.push_back({
-                std::move(word),
-                std::move(wordTrad),
-                reinterpret_cast<const char*>(pinyin8),
-                reinterpret_cast<const char*>(initials8),
-                std::move(sylLens),
-                weight,
-                (source == 1) ? LangSource::Cantonese : LangSource::Mandarin,
-                nasalOnly != 0,
-                validPinyin != 0
-            });
+            int libPrio = 0;
+            int libType = source;
+            if (hasLib)
+            {
+                libPrio = sqlite3_column_int(stmt, col++);
+                libType = sqlite3_column_int(stmt, col++);
+            }
+
+            DictEntry e;
+            e.word = std::move(word);
+            e.wordTrad = std::move(wordTrad);
+            e.pinyin = reinterpret_cast<const char*>(pinyin8);
+            e.initials = reinterpret_cast<const char*>(initials8);
+            e.sylLens = std::move(sylLens);
+            e.weight = weight;
+            e.source = (libType == 1) ? LangSource::Cantonese : LangSource::Mandarin;
+            e.libPriority = libPrio;
+            e.nasalOnly = nasalOnly != 0;
+            e.validPinyin = validPinyin != 0;
+            entries_.push_back(std::move(e));
             ++added;
         }
         sqlite3_finalize(stmt);
@@ -503,9 +834,241 @@ void Dictionary::AddEntry(const std::wstring& word, const std::string& pinyin,
                           int weight, LangSource source)
 {
     const auto syllables = SplitSyllables(pinyin, pinyin);
-    entries_.push_back({ word, std::wstring(), pinyin, BuildInitials(syllables),
-                         EncodeSyllableLengths(syllables), weight, source,
-                         IsNasalOnlyPinyin(pinyin), IsValidPinyinSequence(pinyin) });
+    DictEntry e;
+    e.word = word;
+    e.pinyin = pinyin;
+    e.initials = BuildInitials(syllables);
+    e.sylLens = EncodeSyllableLengths(syllables);
+    e.weight = weight;
+    e.source = source;
+    e.nasalOnly = IsNasalOnlyPinyin(pinyin);
+    e.validPinyin = IsValidPinyinSequence(pinyin);
+    entries_.push_back(std::move(e));
+}
+
+void Dictionary::Reload()
+{
+    entries_.clear();
+    loaded_ = false;
+    EnsureLoaded();
+}
+
+std::vector<MandarinLibraryInfo> Dictionary::GetMandarinLibraries() const
+{
+    std::vector<MandarinLibraryInfo> libs;
+    sqlite3* db = nullptr;
+    std::wstring path;
+    // open readonly
+    path = dbPath_;
+    if (path.empty())
+    {
+        const std::wstring dir = GetModuleDir();
+        if (!dir.empty()) path = dir + L"\\" + kDictSubdir + L"\\" + kDictFile;
+    }
+    if (path.empty()) return libs;
+    if (sqlite3_open_v2(WideToUtf8(path).c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+    {
+        if (db) sqlite3_close(db);
+        return libs;
+    }
+    if (!TableExists(db, "libraries")) { sqlite3_close(db); return libs; }
+
+    const char* sql =
+        "SELECT l.id, l.name, l.sort_order, COUNT(e.id) "
+        "FROM libraries l LEFT JOIN entries e ON e.library_id=l.id "
+        "WHERE l.type=0 "
+        "GROUP BY l.id, l.name, l.sort_order "
+        "ORDER BY l.sort_order ASC, l.id ASC";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            MandarinLibraryInfo info;
+            info.id = sqlite3_column_int64(stmt, 0);
+            const unsigned char* name = sqlite3_column_text(stmt, 1);
+            info.name = name ? Utf8ToWide(reinterpret_cast<const char*>(name)) : L"";
+            info.sortOrder = sqlite3_column_int(stmt, 2);
+            info.wordCount = sqlite3_column_int(stmt, 3);
+            libs.push_back(std::move(info));
+        }
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(db);
+    return libs;
+}
+
+std::vector<LibraryWordEntry> Dictionary::GetLibraryWords(long long id) const
+{
+    std::vector<LibraryWordEntry> words;
+    std::wstring path = dbPath_;
+    if (path.empty())
+    {
+        const std::wstring dir = GetModuleDir();
+        if (!dir.empty()) path = dir + L"\\" + kDictSubdir + L"\\" + kDictFile;
+    }
+    if (path.empty() || id <= 0) return words;
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(WideToUtf8(path).c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+    {
+        if (db) sqlite3_close(db);
+        return words;
+    }
+    if (!TableExists(db, "libraries") || !ColumnExists(db, "entries", "library_id"))
+    {
+        sqlite3_close(db);
+        return words;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT word, pinyin FROM entries WHERE library_id=?1 ORDER BY id";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_int64(stmt, 1, id);
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            const unsigned char* word8 = sqlite3_column_text(stmt, 0);
+            const unsigned char* py8 = sqlite3_column_text(stmt, 1);
+            if (!word8 || !py8) continue;
+
+            LibraryWordEntry item;
+            item.word = Utf8ToWide(reinterpret_cast<const char*>(word8));
+            item.pinyin = Utf8ToWide(reinterpret_cast<const char*>(py8));
+            if (!item.word.empty()) words.push_back(std::move(item));
+        }
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(db);
+    return words;
+}
+
+bool Dictionary::MoveMandarinLibrary(long long id, int direction)
+{
+    sqlite3* db = nullptr; std::wstring path;
+    if (!OpenWritableDb(&db, path)) return false;
+
+    // load ordered mandarin libs
+    std::vector<long long> ids;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT id FROM libraries WHERE type=0 ORDER BY sort_order ASC, id ASC", -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW) ids.push_back(sqlite3_column_int64(stmt, 0));
+        sqlite3_finalize(stmt);
+    }
+    int idx = -1;
+    for (int i = 0; i < (int)ids.size(); ++i) if (ids[i] == id) { idx = i; break; }
+    if (idx < 0) { sqlite3_close(db); return false; }
+    int j = idx + (direction < 0 ? -1 : 1);
+    if (j < 0 || j >= (int)ids.size()) { sqlite3_close(db); return false; }
+    std::swap(ids[idx], ids[j]);
+
+    ExecSql(db, "BEGIN;");
+    for (int i = 0; i < (int)ids.size(); ++i)
+    {
+        sqlite3_stmt* upd = nullptr;
+        sqlite3_prepare_v2(db, "UPDATE libraries SET sort_order=?1 WHERE id=?2", -1, &upd, nullptr);
+        sqlite3_bind_int(upd, 1, i);
+        sqlite3_bind_int64(upd, 2, ids[i]);
+        sqlite3_step(upd); sqlite3_finalize(upd);
+    }
+    ExecSql(db, "COMMIT;");
+    sqlite3_close(db);
+    Reload();
+    return true;
+}
+
+bool Dictionary::DeleteMandarinLibrary(long long id, std::wstring& error)
+{
+    sqlite3* db = nullptr; std::wstring path;
+    if (!OpenWritableDb(&db, path)) { error = L"无法打开词库数据库"; return false; }
+
+    // ensure it's mandarin and not the last one
+    int mandarinCount = 0; int type = -1;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM libraries WHERE type=0", -1, &stmt, nullptr)==SQLITE_OK)
+    { if (sqlite3_step(stmt)==SQLITE_ROW) mandarinCount = sqlite3_column_int(stmt,0); sqlite3_finalize(stmt); }
+    if (sqlite3_prepare_v2(db, "SELECT type FROM libraries WHERE id=?1", -1, &stmt, nullptr)==SQLITE_OK)
+    {
+        sqlite3_bind_int64(stmt,1,id);
+        if (sqlite3_step(stmt)==SQLITE_ROW) type = sqlite3_column_int(stmt,0);
+        sqlite3_finalize(stmt);
+    }
+    if (type != 0) { sqlite3_close(db); error = L"只能删除普通话词库"; return false; }
+    if (mandarinCount <= 1) { sqlite3_close(db); error = L"至少要保留一个普通话词库"; return false; }
+
+    ExecSql(db, "BEGIN;");
+    sqlite3_stmt* del = nullptr;
+    sqlite3_prepare_v2(db, "DELETE FROM entries WHERE library_id=?1", -1, &del, nullptr);
+    sqlite3_bind_int64(del,1,id); sqlite3_step(del); sqlite3_finalize(del);
+    sqlite3_prepare_v2(db, "DELETE FROM libraries WHERE id=?1", -1, &del, nullptr);
+    sqlite3_bind_int64(del,1,id); sqlite3_step(del); sqlite3_finalize(del);
+    ExecSql(db, "COMMIT;");
+    sqlite3_close(db);
+    Reload();
+    return true;
+}
+
+bool Dictionary::ImportQcelLibrary(const std::wstring& qcelPath, std::wstring& outName, std::wstring& error)
+{
+    std::vector<std::pair<std::string, std::wstring>> pairs;
+    if (!ParseQcel(qcelPath, outName, pairs, error)) return false;
+
+    sqlite3* db = nullptr; std::wstring path;
+    if (!OpenWritableDb(&db, path)) { error = L"无法打开词库数据库"; return false; }
+    EnsureSchema(db);
+
+    // determine sort_order (append after last mandarin)
+    int maxOrder = -1;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(sort_order),-1) FROM libraries WHERE type=0", -1, &stmt, nullptr)==SQLITE_OK)
+    { if (sqlite3_step(stmt)==SQLITE_ROW) maxOrder = sqlite3_column_int(stmt,0); sqlite3_finalize(stmt); }
+
+    ExecSql(db, "BEGIN;");
+    long long libId = 0;
+    sqlite3_stmt* insLib = nullptr;
+    if (sqlite3_prepare_v2(db, "INSERT INTO libraries(name,type,sort_order) VALUES(?1,0,?2)", -1, &insLib, nullptr)==SQLITE_OK)
+    {
+        sqlite3_bind_text(insLib, 1, WideToUtf8(outName).c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(insLib, 2, maxOrder + 1);
+        if (sqlite3_step(insLib)==SQLITE_DONE) libId = sqlite3_last_insert_rowid(db);
+        sqlite3_finalize(insLib);
+    }
+    if (libId == 0) { ExecSql(db,"ROLLBACK;"); sqlite3_close(db); error=L"创建词库失败"; return false; }
+
+    sqlite3_stmt* ins = nullptr;
+    const char* sql =
+        "INSERT INTO entries(word,word_trad,pinyin,initials,syl_lens,weight,source,nasal_only,valid_pinyin,library_id)"
+        " VALUES(?1,'',?2,?3,?4,?5,0,?6,?7,?8)";
+    if (sqlite3_prepare_v2(db, sql, -1, &ins, nullptr) != SQLITE_OK)
+    { ExecSql(db,"ROLLBACK;"); sqlite3_close(db); error=L"准备写入词条失败"; return false; }
+
+    // weight: keep import order reasonable
+    int baseWeight = 1000000;
+    for (size_t i = 0; i < pairs.size(); ++i)
+    {
+        const auto& p = pairs[i];
+        const auto syllables = SplitSyllables(p.first, p.first);
+        const std::string initials = BuildInitials(syllables);
+        const std::string syl = EncodeSyllableLengths(syllables);
+        const int weight = baseWeight - (int)i;
+        sqlite3_reset(ins);
+        sqlite3_bind_text(ins, 1, WideToUtf8(p.second).c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 2, p.first.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 3, initials.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(ins, 4, syl.data(), (int)syl.size(), SQLITE_TRANSIENT);
+        sqlite3_bind_int(ins, 5, weight);
+        sqlite3_bind_int(ins, 6, IsNasalOnlyPinyin(p.first) ? 1 : 0);
+        sqlite3_bind_int(ins, 7, IsValidPinyinSequence(p.first) ? 1 : 0);
+        sqlite3_bind_int64(ins, 8, libId);
+        sqlite3_step(ins);
+    }
+    sqlite3_finalize(ins);
+    ExecSql(db, "COMMIT;");
+    sqlite3_close(db);
+
+    Reload();
+    return true;
 }
 
 std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode,
@@ -517,35 +1080,18 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
     const size_t plen = pinyin.size();
     const size_t qlen = initialsQuery.size();
 
-    // 匹配规则：
-    //  1) 拼音匹配：词条拼音以输入串开头（输入了词的前缀），
-    //     或输入串以词条拼音开头（输入了更多，词是前缀的一部分）；
-    //  2) 声母匹配：输入串恰好是各音节声母拼接的前缀（如输入 nh 命中「你好」）；
-    //  3) 混拼匹配：逐音节匹配，每个音节可以用全拼或声母
-    //     （如 nhao = n + hao、nih = ni + h，都能命中「你好」）。
     for (const auto& e : entries_)
     {
         const size_t elen = e.pinyin.size();
         bool pinyinMatch = false;
         if (elen >= plen)
-        {
-            // 词条拼音以输入串开头：用户可能还在输入该词
             pinyinMatch = (e.pinyin.compare(0, plen, pinyin) == 0);
-        }
         else
-        {
-            // 输入串以词条拼音开头：词已完整，可能后面还跟着下一个词的拼音
             pinyinMatch = (pinyin.compare(0, elen, e.pinyin) == 0);
-        }
 
-        // 鼻音自成音节词条（嗯/唔…）拼音很短（n/ng/m），输入串比它长时
-        // 只是靠「词条拼音正好是输入串前缀」混进来，属于噪声，直接跳过。
-        // 输入 n / ng 这类等长或更短的输入不受影响（它们仍排在所有 n 声母字之后）。
         if (pinyinMatch && elen < plen && e.nasalOnly)
             continue;
 
-        // 声母简拼：输入串恰好是各音节声母拼接的前缀（如输入 nh 命中「你好」、
-        // sms 命中「说明书」）。zh/ch/sh 的声母可写两个字母，也可只写首字母。
         bool initialsFull = false;
         bool initialsPrefix = false;
         if (!pinyinMatch && qlen > 0)
@@ -559,15 +1105,12 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
             else if (e.initials.size() >= qlen &&
                      e.initials.compare(0, qlen, initialsQuery) == 0)
             {
-                // 无音节长度信息时退回整串声母前缀比较
                 initialsFull = (e.initials.size() == qlen);
                 initialsPrefix = !initialsFull;
             }
         }
         const bool initialsMatch = initialsFull || initialsPrefix;
 
-        // 混拼：至少两个音节时才有意义（单音节用全拼 / 声母前缀已能覆盖），
-        // 首字母必须相同，避免对全词库做无意义的逐音节匹配。
         bool mixedFull = false;
         bool mixedPartial = false;
         if (plen >= 2 && e.sylLens.size() >= 2 && e.pinyin[0] == pinyin[0])
@@ -580,41 +1123,22 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
         if (!pinyinMatch && !initialsMatch && !mixedFull && !mixedPartial)
             continue;
 
-        // 匹配优先级（越小越靠前）：
-        //  0 拼音完全匹配 + 可完整切分      （如输入 ni → 你；nihao → 你好）
-        //  1 混拼 / 声母完整匹配，或已输入到第 2 个音节及以后的多字词
-        //                                    （如 nih、nhao、nh → 你好；douba → 豆瓣；wom → 我们）
-        //  2 拼音前缀匹配 + 可完整切分 + 单字（如输入 n → 你/那/年…；ni → 你）
-        //  3 拼音前缀匹配 + 可完整切分 + 多字词（如输入 n → 那个/你们…；dou → 豆瓣）
-        //  4 声母前缀匹配
-        //  5 拼音匹配但切分不完整 / 鼻音自成音节（如输入 n → 嗯「拼音 n/ng 不是真正声母」）
         int rank = 0;
         if (pinyinMatch)
         {
             if (elen == plen) rank = e.validPinyin ? 0 : 5;
             else if (e.nasalOnly || !e.validPinyin) rank = 5;
-            else if (mixedFull) rank = 1;            // nih / nhao → 你好
-            else if (CoveredSyllableCount(e.sylLens, plen) >= 2) rank = 1; // douba → 豆瓣
+            else if (mixedFull) rank = 1;
+            else if (CoveredSyllableCount(e.sylLens, plen) >= 2) rank = 1;
             else rank = (e.word.size() == 1) ? 2 : 3;
         }
         else if (initialsFull || mixedFull)
-        {
-            rank = 1;   // 声母 / 混拼完整匹配（nh → 你好；sms → 说明书）
-        }
+            rank = 1;
         else if (initialsPrefix)
-        {
-            rank = 4;   // 声母前缀匹配（只命中词的前几个音节）
-        }
+            rank = 4;
         else
-        {
-            rank = 3;   // 混拼前缀（还在输入中，如 nha → 你好）
-        }
+            rank = 3;
 
-        // 本次实际覆盖到的输入字母数：
-        //  - pinyinMatch 时 = min(plen, elen)
-        //  - mixedFull    时 = plen   （输入串刚好覆盖所有音节，算完整）
-        //  - initialsFull 时 = 规则匹配实际消耗的字母数（如 nh→2、sms→3）
-        // 其余情况为 0，不参与"更长完整匹配"排序。
         size_t matchedLen = 0;
         if (mixedFull)         matchedLen = plen;
         else if (pinyinMatch)  matchedLen = (std::min)(plen, elen);
@@ -623,52 +1147,32 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
         result.push_back(e);
         DictEntry& added = result.back();
         added.viaInitials = (initialsMatch || mixedFull || mixedPartial);
-        // 词条每个音节是否都被输入完整匹配：
-        //  - 全拼完整 / 声母完整 / 混拼完整都算完整匹配；
-        //  - 词条比输入长（还在输入该词）不算完整匹配。
         added.fullWordMatch = (mixedFull || initialsFull || (pinyinMatch && elen <= plen));
         added.matchRank = rank;
         added.matchedLen = matchedLen;
     }
 
-    // ===== 基于模式的优先级排序 =====
-    // mode == 0 : 普通话模式 —— 粤语词条强制排到最后
-    // mode == 1 : 粤语模式   —— 粤语词条强制排到最前
-    // 具体权重调整见 ModeScore（同一来源内部仍按词频排序）。
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
-            // 匹配优先级由 matchRank 给出（见上方匹配循环），这里只负责按它排序。
-            // 关键：
-            //  1) 输入单个字母时，先列该声母的单字，再列词组，最后才是「嗯」这类非真正声母；
-            //  2) 嗯(pinyin=n) 这种残拼音完全匹配不会压过「你」(ni)；
-            //  3) 嗯(ng)、呒(m) 这类鼻音自成音节排在所有 n/m 声母字之后；
-            //  4) 多字词（你好=nihao）能完整切分，仍按完全匹配拿最高优先级；
-            //  5) 输入完整音节（如 ng、en）时仍按完全匹配优先；
-            //  6) 混拼完整匹配（nih / nhao / nh → 你好）排在单字前缀之前；
-            //  7) 已打到第 2 个音节及以后时，多字词排在单字之前（douba → 豆瓣，wom → 我们）。
             if (a.matchRank != b.matchRank) return a.matchRank < b.matchRank;
-
-            // 同优先级下，"更长完整匹配"优先：
-            //  - 输入 nihaom 时「你好吗」matchedLen=5 > 「你好」matchedLen=4 → 你好吗排前
-            //  - 输入 nihao  时「你好吗」matchedLen=4 = 「你好」matchedLen=4 → 走后续词频比较
             if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
 
-            long long sa = ModeScore(a, mode);
-            long long sb = ModeScore(b, mode);
-            if (sa != sb) return sa > sb;
-            // 同分同匹配长度下，拼音更短（更精确）的优先
+            // 当前模式优先的来源（普通话模式先普通话，粤语模式先粤语）
+            const int ta = SourceTier(a, mode);
+            const int tb = SourceTier(b, mode);
+            if (ta != tb) return ta > tb;
+
+            // 同为普通话词库时，按用户在词库管理中的排序（sort_order 越小越优先）
+            if (a.source == LangSource::Mandarin && b.source == LangSource::Mandarin &&
+                a.libPriority != b.libPriority)
+                return a.libPriority < b.libPriority;
+
             if (a.pinyin.size() != b.pinyin.size())
                 return a.pinyin.size() < b.pinyin.size();
             return a.weight > b.weight;
         });
 
-    // 候选词字数不得超过输入串已声明的声母个数（音节数）：
-    // 例如输入 suoyou（s + y 两个声母）时只保留 2 字以内的词，
-    // 不再列出「所有人」「所有作品」这类靠前缀补全混进来的更长词；
-    // 纯声母输入（jx、ryjx）同样按声母个数（字母数）限制，排除「教学活动」「集线器」。
-    // 仅裁掉“还没输完的补全词”（词条音节没有全部被输入匹配），
-    // 已经完整匹配的词条（如 dershijiu → 第二十九）不受此限制。
     const size_t inputInitials = CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery);
     if (inputInitials >= 2)
     {
@@ -691,15 +1195,11 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     std::vector<DictEntry> result = QueryOnce(pinyin, mode, initialsQuery);
     if (initialsQuery.size() < 2) return result;
 
-    // 整串已命中词组：直接返回。纯声母输入（如 jx）再补上首字母声母对应的单字
-    // （j 开头的字），让用户既能选词也能选字。
     const bool hasWordGroup = std::any_of(result.begin(), result.end(),
         [](const DictEntry& e) { return e.word.size() >= 2; });
 
     if (hasWordGroup)
     {
-        // 纯声母输入（如 jx）命中词组时，末尾补上首字母声母对应的单字（j 开头的字），
-        // 让用户既能选词也能选字。
         const bool pureInitials = !IsValidPinyinSequence(initialsQuery);
         if (pureInitials)
         {
@@ -717,14 +1217,6 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
         return result;
     }
 
-    // 整串匹配不到任何词组时，按「候选词生成规则」回退：
-    // 对每条词条，用「独立声母 / 完整拼音音节」的方式匹配输入的前缀，
-    // 能完整匹配词条所有音节的最长前缀长度就是该词条的“覆盖长度”。
-    // 然后按覆盖长度由长到短排列（用户可先选覆盖更长、更确定的词），
-    // 同覆盖长度再按来源/词频排序。
-    //
-    // 例：nmzshuoshenme（词库未收录整句时）
-    //   农民增收 覆盖 nmzsh（4 个声母）> 南美洲 / 柠檬汁 覆盖 nmz > 你们 覆盖 nm。
     const std::string& input = initialsQuery.empty() ? pinyin : initialsQuery;
 
     std::vector<DictEntry> all;
@@ -732,31 +1224,31 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     {
         const size_t covered = RuleConsume(e, input);
         if (covered == 0) continue;
-
-        // 词组层至少覆盖 2 个字母；单字层只要声母/拼音能匹配到即可。
         if (e.word.size() >= 2 && covered < 2) continue;
 
         DictEntry added = e;
         added.viaInitials = true;
         added.fullWordMatch = true;
         added.matchedLen = covered;
-        added.consumeInputLen = covered;   // 选中后只消耗规则匹配到的这段输入
+        added.consumeInputLen = covered;
         all.push_back(std::move(added));
     }
 
     std::stable_sort(all.begin(), all.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
-            // 1) 覆盖输入长度由长到短
             if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
-            // 2) 同覆盖长度按当前模式的来源/词频优先级
-            const long long sa = ModeScore(a, mode);
-            const long long sb = ModeScore(b, mode);
-            if (sa != sb) return sa > sb;
+
+            const int ta = SourceTier(a, mode);
+            const int tb = SourceTier(b, mode);
+            if (ta != tb) return ta > tb;
+
+            if (a.source == LangSource::Mandarin && b.source == LangSource::Mandarin &&
+                a.libPriority != b.libPriority)
+                return a.libPriority < b.libPriority;
             return a.weight > b.weight;
         });
 
-    // 同一词条可能在多个切分方式下都能匹配，按排序后的顺序去重，保留覆盖最长的。
     result.clear();
     std::set<std::pair<std::wstring, int>> seen;
     result.reserve(all.size());

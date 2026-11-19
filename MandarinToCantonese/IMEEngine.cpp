@@ -744,3 +744,33 @@ bool IME_HasComposition()
 {
     return !g_composition.empty();
 }
+
+bool IME_ImportQcelLibrary(const wchar_t* path,
+                           wchar_t* nameBuf, int nameBufLen,
+                           wchar_t* errorBuf, int errorBufLen)
+{
+    EnsureInit();
+
+    auto copyText = [](const std::wstring& src, wchar_t* buf, int bufLen)
+    {
+        if (!buf || bufLen <= 0) return;
+        int n = (int)src.size();
+        if (n >= bufLen) n = bufLen - 1;
+        for (int i = 0; i < n; ++i) buf[i] = src[i];
+        buf[n] = L'\0';
+    };
+
+    if (!path || !*path)
+    {
+        copyText(L"词库文件路径为空", errorBuf, errorBufLen);
+        return false;
+    }
+
+    std::wstring name;
+    std::wstring error;
+    bool ok = Dictionary::Instance().ImportQcelLibrary(path, name, error);
+
+    copyText(name, nameBuf, nameBufLen);
+    copyText(error, errorBuf, errorBufLen);
+    return ok;
+}

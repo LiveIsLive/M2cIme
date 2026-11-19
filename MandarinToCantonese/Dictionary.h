@@ -21,6 +21,7 @@ struct DictEntry
     std::string  sylLens;  // 各音节长度（每字节一个音节长度，"nihao" -> {2,3}），用于混拼匹配
     int          weight;   // 词频权重（越大越靠前）
     LangSource   source;   // 来源词库
+    int          libPriority = 0; // 普通话词库优先级（数值越小越优先，仅同为普通话时比较）
     bool         nasalOnly = false;   // 首音节是鼻音自成音节（n/ng/m/hm/hng，如「嗯」「呒」），没有真正声母
     bool         validPinyin = true;  // 拼音能否完整切分为合法音节（"nihao"=ni+hao 为 true；"n" 为 false）
     bool         viaInitials = false; // 查询结果标记：是否靠声母简拼 / 混拼匹配（词库本身不使用）
@@ -30,11 +31,27 @@ struct DictEntry
     size_t       consumeInputLen = 0; // 查询结果标记：选中后消耗组合串的字符数（回退候选专用，0 = 按默认规则消耗）
 };
 
+// 普通话词库信息（用于词库管理界面）
+struct MandarinLibraryInfo
+{
+    long long    id = 0;
+    std::wstring name;
+    int          wordCount = 0;
+    int          sortOrder = 0; // 越小越优先（列表中排在前面）
+};
+
+// 词库浏览用的一条“字词 + 拼音”（已转成宽字符，方便界面直接显示）
+struct LibraryWordEntry
+{
+    std::wstring word;
+    std::wstring pinyin;
+};
+
 // 词典：从外置 SQLite 词库文件加载普通话 + 粤语词条，
 // 并根据当前输入模式做候选词优先级排序。
 //
 // 词库文件位于 DLL 所在目录（安装目录）下的 dicts 子目录：
-//   dicts\m2c_dict.db   —— 普通话 + 粤语词条（拼音、声母、音节长度等已预计算）
+//   dicts\m2c_dict.db
 // 若 dicts 子目录不存在，则回退查找 DLL 所在目录本身。
 class Dictionary
 {
@@ -45,20 +62,6 @@ public:
     void EnsureLoaded();
 
     // 按拼音（连续串）查找候选词。
-    // mode: 0 = 普通话模式（粤语词条排最后），1 = 粤语模式（粤语词条排最前）
-    // initialsQuery: 原始组合串，用于声母简拼 / 混拼匹配：
-    //   "nh"    -> 你好（全声母简拼）
-    //   "sms"   -> 说明书（全声母简拼，zh/ch/sh 可只写首字母）
-    //   "nih"   -> 你好（ni 全拼 + h 声母）
-    //   "nhao"  -> 你好（n 声母 + hao 全拼）
-    //   留空则不启用简拼 / 混拼匹配。
-    // 返回按优先级排序后的候选列表。
-    //
-    // 回退：整串匹配不到任何词组时（如输入 nmzshuoshenme 但词库未收录整句），
-    // 按「候选词生成规则」把输入切分为「独立声母 / 完整拼音音节」，
-    // 列出所有能完整匹配的词条，并按覆盖的输入字母数由长到短排列
-    // （如 农民增收 覆盖 nmzs > 南美洲 / 柠檬汁 覆盖 nmz > 你们 覆盖 nm）。
-    // 选中某个回退候选时只消耗它实际匹配到的输入字母，剩余部分继续出候选。
     std::vector<DictEntry> GetCandidates(const std::string& pinyin, int mode,
                                          const std::string& initialsQuery = std::string()) const;
 
@@ -66,18 +69,33 @@ public:
     void AddEntry(const std::wstring& word, const std::string& pinyin,
                   int weight, LangSource source);
 
+    // ===== 普通话词库管理 =====
+    std::vector<MandarinLibraryInfo> GetMandarinLibraries() const;
+    // 读取指定词库的全部字词及拼音（按词库中的原始顺序）
+    std::vector<LibraryWordEntry> GetLibraryWords(long long id) const;
+    bool MoveMandarinLibrary(long long id, int direction); // direction: -1 上移, +1 下移
+    bool DeleteMandarinLibrary(long long id, std::wstring& error);
+    bool ImportQcelLibrary(const std::wstring& qcelPath, std::wstring& outName, std::wstring& error);
+    std::wstring GetDatabasePath() const { return dbPath_; }
+
+    // 重新加载词库（管理操作后调用）
+    void Reload();
+
 private:
     Dictionary() = default;
 
-    // 对整串执行一次匹配 + 排序（不含逐级回退），供 GetCandidates 及其回退层调用。
     std::vector<DictEntry> QueryOnce(const std::string& pinyin, int mode,
                                      const std::string& initialsQuery) const;
 
-    // 从 SQLite 词库文件读取词条（表 entries，字段均由导入工具预计算）。
     bool LoadFromDatabase(const std::wstring& path);
-
     void LoadExternal();
+
+    // 词库 schema 迁移与管理辅助
+    bool EnsureSchema(struct sqlite3* db);
+    bool MigrateLegacyIfNeeded(struct sqlite3* db);
+    bool OpenWritableDb(struct sqlite3** outDb, std::wstring& outPath) const;
 
     std::vector<DictEntry> entries_;
     bool loaded_ = false;
+    std::wstring dbPath_;
 };

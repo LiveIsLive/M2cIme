@@ -4,10 +4,270 @@
 #include "TextService.h"
 #include "resource.h"
 #include <windowsx.h>   // ComboBox_* 宏
+#include <commdlg.h>
+#include <commctrl.h>
+#include <shellapi.h>
+#include <algorithm>
+#include <cwchar>
+#include <string>
+#include <vector>
 
-// 设置字符：齿轮（U+2699），作为"设置"入口的图标
-// （原暂定字符 U+1202D 楔形文字因系统字体不支持无法显示，改用通用齿轮符号）
+#include "../MandarinToCantonese/Dictionary.h"
+
+#pragma comment(lib, "Comdlg32.lib")
+#pragma comment(lib, "Comctl32.lib")
+#pragma comment(lib, "Shell32.lib")
+
+// 设置字符：齿轮（U+2699）
 #define M2C_SETTINGS_GLYPH  L"\u2699"
+
+namespace
+{
+    struct DictMgrState
+    {
+        std::vector<MandarinLibraryInfo> libs;
+    };
+
+    void RefreshDictList(HWND hDlg, DictMgrState* st)
+    {
+        HWND hList = GetDlgItem(hDlg, IDC_DICT_LIST);
+        if (!hList || !st) return;
+        int sel = (int)SendMessageW(hList, LB_GETCURSEL, 0, 0);
+        long long selId = -1;
+        if (sel >= 0 && sel < (int)st->libs.size()) selId = st->libs[sel].id;
+
+        SendMessageW(hList, LB_RESETCONTENT, 0, 0);
+        st->libs = Dictionary::Instance().GetMandarinLibraries();
+
+        int newSel = -1;
+        for (size_t i = 0; i < st->libs.size(); ++i)
+        {
+            const auto& lib = st->libs[i];
+            std::wstring text = lib.name + L"  (" + std::to_wstring(lib.wordCount) + L" 个词)";
+            int idx = (int)SendMessageW(hList, LB_ADDSTRING, 0, (LPARAM)text.c_str());
+            if (lib.id == selId) newSel = idx;
+            (void)idx;
+        }
+        if (newSel < 0 && !st->libs.empty())
+        {
+            if (sel >= (int)st->libs.size()) newSel = (int)st->libs.size() - 1;
+            else if (sel >= 0) newSel = sel;
+            else newSel = 0;
+        }
+        if (newSel >= 0) SendMessageW(hList, LB_SETCURSEL, newSel, 0);
+    }
+
+    // ===== 词库查看对话框 =====
+
+    struct DictViewState
+    {
+        std::vector<LibraryWordEntry> words;
+    };
+
+    INT_PTR CALLBACK DictViewDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        switch (msg)
+        {
+        case WM_INITDIALOG:
+        {
+            INITCOMMONCONTROLSEX icc = {};
+            icc.dwSize = sizeof(icc);
+            icc.dwICC = ICC_LISTVIEW_CLASSES;
+            InitCommonControlsEx(&icc);
+
+            auto* st = new DictViewState();
+            SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)st);
+
+            const auto* lib = reinterpret_cast<const MandarinLibraryInfo*>(lParam);
+            if (lib)
+            {
+                std::wstring title = L"查看词库 - " + lib->name;
+                SetWindowTextW(hDlg, title.c_str());
+                st->words = Dictionary::Instance().GetLibraryWords(lib->id);
+                std::wstring info = lib->name + L"  （共 " +
+                                    std::to_wstring(st->words.size()) + L" 个字词）";
+                SetDlgItemTextW(hDlg, IDC_DICT_VIEW_INFO, info.c_str());
+            }
+
+            HWND hList = GetDlgItem(hDlg, IDC_DICT_VIEW_LIST);
+            if (hList)
+            {
+                ListView_SetExtendedListViewStyle(hList,
+                    LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+                LVCOLUMNW col = {};
+                col.mask = LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
+                col.cx = 200;
+                col.pszText = const_cast<wchar_t*>(L"字词");
+                ListView_InsertColumn(hList, 0, &col);
+                col.pszText = const_cast<wchar_t*>(L"拼音");
+                ListView_InsertColumn(hList, 1, &col);
+                // 词库可能有数万条；LVS_OWNERDATA 只在需要绘制时取数据，避免逐条插入卡顿
+                ListView_SetItemCount(hList, (int)st->words.size());
+            }
+            return TRUE;
+        }
+        case WM_NOTIFY:
+        {
+            const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
+            if (nm && nm->idFrom == IDC_DICT_VIEW_LIST && nm->code == LVN_GETDISPINFOW)
+            {
+                auto* st = reinterpret_cast<DictViewState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+                auto* di = reinterpret_cast<NMLVDISPINFOW*>(lParam);
+                if (st && (di->item.mask & LVIF_TEXT) && di->item.pszText &&
+                    di->item.cchTextMax > 0 && di->item.iItem >= 0 &&
+                    di->item.iItem < (int)st->words.size())
+                {
+                    const auto& entry = st->words[(size_t)di->item.iItem];
+                    const std::wstring& text =
+                        (di->item.iSubItem == 0) ? entry.word : entry.pinyin;
+                    const size_t n = (std::min)(text.size(), (size_t)di->item.cchTextMax - 1);
+                    CopyMemory(di->item.pszText, text.data(), n * sizeof(wchar_t));
+                    di->item.pszText[n] = L'\0';
+                }
+                return TRUE;
+            }
+            break;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wParam) == IDCANCEL)
+            {
+                EndDialog(hDlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        case WM_CLOSE:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        case WM_DESTROY:
+        {
+            auto* st = reinterpret_cast<DictViewState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+            if (st) { delete st; SetWindowLongPtrW(hDlg, GWLP_USERDATA, 0); }
+            return TRUE;
+        }
+        }
+        return FALSE;
+    }
+
+    void ShowDictViewDialog(HWND hwndOwner, const MandarinLibraryInfo& lib)
+    {
+        DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_DICT_VIEW), hwndOwner,
+                        DictViewDlgProc, (LPARAM)&lib);
+    }
+
+    INT_PTR CALLBACK DictMgrDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        switch (msg)
+        {
+        case WM_INITDIALOG:
+        {
+            auto* st = new DictMgrState();
+            SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)st);
+            RefreshDictList(hDlg, st);
+            return TRUE;
+        }
+        case WM_COMMAND:
+        {
+            auto* st = reinterpret_cast<DictMgrState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+            const WORD id = LOWORD(wParam);
+            HWND hList = GetDlgItem(hDlg, IDC_DICT_LIST);
+            int sel = hList ? (int)SendMessageW(hList, LB_GETCURSEL, 0, 0) : -1;
+
+            if (id == IDC_DICT_MOVE_UP || id == IDC_DICT_MOVE_DOWN)
+            {
+                if (st && sel >= 0 && sel < (int)st->libs.size())
+                {
+                    Dictionary::Instance().MoveMandarinLibrary(st->libs[sel].id, id == IDC_DICT_MOVE_UP ? -1 : 1);
+                    RefreshDictList(hDlg, st);
+                }
+                return TRUE;
+            }
+            if (id == IDC_DICT_IMPORT)
+            {
+                wchar_t file[MAX_PATH] = {};
+                OPENFILENAMEW ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = hDlg;
+                ofn.lpstrFilter = L"QQ拼音词库 (*.qcel)\0*.qcel\0所有文件 (*.*)\0*.*\0";
+                ofn.lpstrFile = file;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+                ofn.lpstrDefExt = L"qcel";
+                if (GetOpenFileNameW(&ofn))
+                {
+                    std::wstring name, err;
+                    if (!Dictionary::Instance().ImportQcelLibrary(file, name, err))
+                    {
+                        if (err.empty()) err = L"导入失败";
+                        MessageBoxW(hDlg, err.c_str(), L"导入词库", MB_OK | MB_ICONWARNING);
+                    }
+                    else
+                    {
+                        std::wstring msg = L"已导入词库：" + name;
+                        MessageBoxW(hDlg, msg.c_str(), L"导入词库", MB_OK | MB_ICONINFORMATION);
+                        RefreshDictList(hDlg, st);
+                    }
+                }
+                return TRUE;
+            }
+            if (id == IDC_DICT_DELETE)
+            {
+                if (st && sel >= 0 && sel < (int)st->libs.size())
+                {
+                    if (st->libs.size() <= 1)
+                    {
+                        MessageBoxW(hDlg, L"至少要保留一个普通话词库，不能删除最后一个词库。", L"删除词库", MB_OK | MB_ICONWARNING);
+                        return TRUE;
+                    }
+                    std::wstring prompt = L"确定要删除词库“" + st->libs[sel].name + L"”吗？";
+                    if (MessageBoxW(hDlg, prompt.c_str(), L"删除词库", MB_OKCANCEL | MB_ICONQUESTION) == IDOK)
+                    {
+                        std::wstring err;
+                        if (!Dictionary::Instance().DeleteMandarinLibrary(st->libs[sel].id, err))
+                        {
+                            if (err.empty()) err = L"删除失败";
+                            MessageBoxW(hDlg, err.c_str(), L"删除词库", MB_OK | MB_ICONWARNING);
+                        }
+                        RefreshDictList(hDlg, st);
+                    }
+                }
+                return TRUE;
+            }
+            if (id == IDC_DICT_DOWNLOAD)
+            {
+                ShellExecuteW(hDlg, L"open", L"https://cdict.qq.pinyin.cn/", nullptr, nullptr, SW_SHOWNORMAL);
+                return TRUE;
+            }
+            if (id == IDC_DICT_VIEW)
+            {
+                if (st && sel >= 0 && sel < (int)st->libs.size())
+                    ShowDictViewDialog(hDlg, st->libs[sel]);
+                return TRUE;
+            }
+            if (id == IDCANCEL)
+            {
+                EndDialog(hDlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_CLOSE:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        case WM_DESTROY:
+        {
+            auto* st = reinterpret_cast<DictMgrState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+            if (st) { delete st; SetWindowLongPtrW(hDlg, GWLP_USERDATA, 0); }
+            return TRUE;
+        }
+        }
+        return FALSE;
+    }
+
+    void ShowDictManagerDialog(HWND hwndOwner)
+    {
+        DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_DICT_MGR), hwndOwner, DictMgrDlgProc, 0);
+    }
+}
 
 // ===== 设置对话框 =====
 
@@ -17,7 +277,6 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
     {
     case WM_INITDIALOG:
     {
-        // lParam 由 DialogBoxParam 传入，保存 CTextService 指针
         CTextService* pService = reinterpret_cast<CTextService*>(lParam);
         SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)pService);
 
@@ -45,6 +304,11 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
             EndDialog(hDlg, IDOK);
             return TRUE;
         }
+        if (LOWORD(wParam) == IDC_MANAGE_DICTS_BTN)
+        {
+            ShowDictManagerDialog(hDlg);
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDCANCEL)
         {
             EndDialog(hDlg, IDCANCEL);
@@ -59,8 +323,6 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
     }
     return FALSE;
 }
-
-// ===== 设置对话框 =====
 
 // 打开模态"设置"对话框。自绘状态条（StatusBar.cpp）与语言栏按钮共用此入口。
 void M2CShowSettingsDialog(CTextService* pService, HWND hwndOwner)
@@ -122,8 +384,8 @@ STDMETHODIMP CLangBarSettingsButton::GetInfo(TF_LANGBARITEMINFO* pInfo)
     if (!pInfo) return E_INVALIDARG;
     pInfo->clsidService = CLSID_M2CTextService;
     pInfo->guidItem = GUID_M2CLangBarSettingsButton;
-    pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY;  // 非菜单式，直接点击
-    pInfo->ulSort = 4;  // 排在模式、全角/半角、标点、简/繁按钮之后
+    pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY;
+    pInfo->ulSort = 4;
     wcscpy_s(pInfo->szDescription, M2C_SETTINGS_BTN_DESC);
     return S_OK;
 }
@@ -146,7 +408,6 @@ STDMETHODIMP CLangBarSettingsButton::GetTooltipString(BSTR* pbstrToolTip)
 
 STDMETHODIMP CLangBarSettingsButton::OnClick(TfLBIClick /*click*/, POINT /*pt*/, const RECT* /*prcArea*/)
 {
-    // 点击打开设置对话框（模态）
     if (_pService)
         M2CShowSettingsDialog(_pService, nullptr);
     return S_OK;
@@ -169,7 +430,6 @@ HICON CLangBarSettingsButton::_GetSettingsIcon()
     return _hIcon;
 }
 
-// 用 GDI 画一个 16x16 的圆角小方块，中间是白色设置字符
 HICON CLangBarSettingsButton::_CreateSettingsIcon(const WCHAR* text, COLORREF bg)
 {
     int cx = GetSystemMetrics(SM_CXSMICON);
