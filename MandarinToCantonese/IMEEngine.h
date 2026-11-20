@@ -125,6 +125,9 @@ __declspec(dllexport) void IME_ClearCommitted();
 // 清空当前组合串与候选（不提交）
 __declspec(dllexport) void IME_ClearComposition();
 
+// 结束并归档当前连续选词形成的词组（前端在焦点离开等时机调用）
+__declspec(dllexport) void IME_FlushPhraseSession();
+
 // 引擎是否处于有组合串的输入状态
 __declspec(dllexport) bool IME_HasComposition();
 

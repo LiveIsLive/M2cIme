@@ -371,7 +371,8 @@ STDMETHODIMP CTextService::OnSetThreadFocus()
 
 STDMETHODIMP CTextService::OnKillThreadFocus()
 {
-    // 焦点离开：清空组合串并隐藏候选窗、状态条
+    // 焦点离开：先把连续选出的词组归档到用户自定义词库，再清空组合串
+    IME_FlushPhraseSession();
     IME_ClearComposition();
     _ClearPunctPending();
     _pageIndex = 0;

@@ -20,6 +20,14 @@ namespace
     std::vector<DictEntry> g_candidates;    // 当前候选词列表
     std::wstring         g_committed;       // 最近一次提交的文本
 
+    // 连续选词会话：把一次拼音输入中依次选出的词条拼成词组，
+    // 用于「用户自造词」。组合串被消耗完（词组输入完成）时归档。
+    bool         g_phraseSessionActive = false;
+    std::wstring g_phraseSessionWord;      // 已选出的文本，如「红果短剧」
+    std::string  g_phraseSessionPinyin;    // 对应的完整拼音，如 "hongguoduanju"
+    // 用空格逐音节上屏后，下一次字母输入仍属于同一个词组，不能归档
+    bool         g_syllableSpacePending = false;
+
     bool g_initialized = false;
 
     void EnsureInit()
@@ -247,6 +255,21 @@ namespace
         s.erase(0, consumed);
     }
 
+    // 把当前组合串转换成用于查词典的纯拼音串（与 RefreshCandidates 保持一致）：
+    // 全拼过滤标点/数字并转小写；双拼先解码为完整拼音。
+    std::string CompositionPinyin()
+    {
+        if (g_pinyinMode == IME_PINYIN_DOUBLE)
+            return ShuangpinDecode(g_composition);
+
+        std::string pure;
+        pure.reserve(g_composition.size());
+        for (char c : g_composition)
+            if (isalpha((unsigned char)c))
+                pure.push_back((char)tolower((unsigned char)c));
+        return pure;
+    }
+
     // 根据当前组合串重新生成候选词
     void RefreshCandidates()
     {
@@ -255,19 +278,7 @@ namespace
 
         // 组合串里可能混有标点（如 "nin"shizuncheng），词典只认拼音，
         // 所以先用过滤掉标点/数字的纯拼音串来查候选
-        std::string purePinyin;
-        if (g_pinyinMode == IME_PINYIN_DOUBLE)
-        {
-            // 双拼：把原始按键串解码为完整拼音后再查词典
-            purePinyin = ShuangpinDecode(g_composition);
-        }
-        else
-        {
-            purePinyin.reserve(g_composition.size());
-            for (char c : g_composition)
-                if (isalpha((unsigned char)c))
-                    purePinyin.push_back((char)tolower((unsigned char)c));
-        }
+        const std::string purePinyin = CompositionPinyin();
         if (purePinyin.empty()) return;  // 全是标点，不生成候选
 
         int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
@@ -315,6 +326,9 @@ namespace
         s.erase(0, consumed);
     }
 
+    void ResetPhraseSession();
+    void RememberComposedPhrase();
+
     // 提交一个候选词
     bool CommitCandidate(int index)
     {
@@ -322,6 +336,31 @@ namespace
 
         const DictEntry& chosen = g_candidates[index];
         g_committed = chosen.word;
+        g_syllableSpacePending = false;
+
+        // 判断是否在重新输入刚拼出的词组。
+        // 这里必须比较「当前组合串的纯拼音」，而不是当前候选自身的拼音：
+        // 连续输入 hongguoduanju 时，第一次选出的候选是「红」(hong)，
+        // 但此时组合串仍是 hongguoduanju；第二轮再输入整串时同样如此。
+        // 若当前输入是会话拼音的前缀（含相等），说明上一句已输完，先归档上一句。
+        const std::string typedPinyin = CompositionPinyin();
+        if (g_phraseSessionActive && !typedPinyin.empty() &&
+            !g_phraseSessionPinyin.empty() &&
+            g_phraseSessionPinyin.compare(0, typedPinyin.size(), typedPinyin) == 0)
+        {
+            RememberComposedPhrase();
+        }
+
+        // 连续选词：把本次选中的词条与拼音累积到会话中。
+        // 用候选自身的完整拼音（而非本次消耗的输入片段），简拼选词也能得到正确拼音。
+        if (!g_phraseSessionActive)
+        {
+            g_phraseSessionActive = true;
+            g_phraseSessionWord.clear();
+            g_phraseSessionPinyin.clear();
+        }
+        g_phraseSessionWord += chosen.word;
+        g_phraseSessionPinyin += chosen.pinyin;
 
         if (chosen.consumeInputLen > 0)
         {
@@ -392,6 +431,43 @@ namespace
     {
         g_committed = text;
     }
+
+    // 用户以原始文本上屏了当前组合串（通常是词库里没有对应词组）。
+    // 若该拼音在所有词库中都不存在，则记入「用户自定义词库」，
+    // 下次输入相同拼音时就能作为候选直接选用。
+    void RememberRawComposition()
+    {
+        if (g_composition.empty()) return;
+        const std::string pinyin = CompositionPinyin();
+        if (pinyin.empty()) return;
+
+        // 写入的词是用户实际提交的原始文本；双拼模式下对应的拼音是解码结果。
+        const std::wstring word(g_composition.begin(), g_composition.end());
+        std::wstring error;
+        Dictionary::Instance().AddUserCustomWordIfMissing(word, pinyin, error);
+    }
+
+    void ResetPhraseSession()
+    {
+        g_phraseSessionActive = false;
+        g_phraseSessionWord.clear();
+        g_phraseSessionPinyin.clear();
+        g_syllableSpacePending = false;
+    }
+
+    // 一次连续选词结束（组合串已全部消耗）：若拼出的词组在所有词库中都不存在，
+    // 则记入「用户自定义词库」，下次输入整串拼音即可一次选出该词组。
+    void RememberComposedPhrase()
+    {
+        if (!g_phraseSessionActive) return;
+        if (!g_phraseSessionWord.empty() && !g_phraseSessionPinyin.empty())
+        {
+            std::wstring error;
+            Dictionary::Instance().AddUserCustomWordIfMissing(
+                g_phraseSessionWord, g_phraseSessionPinyin, error);
+        }
+        ResetPhraseSession();
+    }
 }
 
 // ===== 导出函数实现 =====
@@ -409,6 +485,7 @@ void IME_SetMode(ImeInputMode mode)
         // 切换模式时清空当前组合，避免候选与新模式不一致
         g_composition.clear();
         g_candidates.clear();
+        ResetPhraseSession();
         // 注意：不清空 g_committed，前端仍可取走上一次提交
     }
 }
@@ -464,6 +541,7 @@ void IME_SetPinyinMode(ImePinyinMode mode)
         // 切换全拼/双拼时清空当前组合，避免候选与新方式不一致
         g_composition.clear();
         g_candidates.clear();
+        ResetPhraseSession();
     }
 }
 
@@ -551,6 +629,22 @@ bool IME_OnChar(char ch)
 {
     EnsureInit();
 
+    // 连续选词结束后，下一次开始输入字母就是新的一组拼音。
+    // 在这里先归档上一组，能使刚拼出的词组立刻出现在本次输入的候选中
+    // （如果等到本次选词时才归档，本次候选窗已经生成，用户要再输一次才看得到）。
+    if (g_phraseSessionActive && g_composition.empty() && g_mode != IME_MODE_ENGLISH)
+    {
+        if (ch == ' ')
+        {
+            // 用空格逐音节上屏：标记下一个音节仍属于同一词组
+            g_syllableSpacePending = true;
+        }
+        else if (isalpha((unsigned char)ch) && !g_syllableSpacePending)
+        {
+            RememberComposedPhrase();
+        }
+    }
+
     // 英文模式：字母、数字、空格直接提交；标点根据中文/英文标点模式转换后提交
     if (g_mode == IME_MODE_ENGLISH)
     {
@@ -592,6 +686,9 @@ bool IME_OnChar(char ch)
 
     if (ispunct(uch))
     {
+        // 句读标点视为一次输入结束，把之前连续选出的词组归档
+        if (ch == '.' || ch == '!' || ch == '?' || ch == ',' || ch == ';' || ch == ':')
+            RememberComposedPhrase();
         // 标点：拼音模式下也进组合串，让分词器统一跳过标点来识别拼音
         // （候选窗就能完整显示用户输入的 "nin"shizuncheng）
         g_composition.push_back(ch);
@@ -627,13 +724,17 @@ bool IME_OnChar(char ch)
 
     if (ch == '\r' || ch == '\n')
     {
+        // 回车结束本次输入：先归档连续选出的词组
+        RememberComposedPhrase();
         // 回车：把当前组合串作为原始拼音提交
         if (!g_composition.empty())
         {
             std::wstring raw(g_composition.begin(), g_composition.end());
+            RememberRawComposition();
             CommitRaw(raw);
             g_composition.clear();
             g_candidates.clear();
+            ResetPhraseSession();  // 改为原文上屏，未完成的连续选词作废
             return true;
         }
         return false;
@@ -653,6 +754,8 @@ bool IME_OnBackspace()
 {
     if (!g_composition.empty())
     {
+        // 修改输入内容后，之前的连续选词不再对应当前组合串
+        ResetPhraseSession();
         g_composition.pop_back();
         RefreshCandidates();
         return true;
@@ -664,6 +767,7 @@ bool IME_DeleteCompositionFront(int n)
 {
     if (n <= 0 || g_composition.empty()) return false;
     if ((size_t)n > g_composition.size()) n = (int)g_composition.size();
+    ResetPhraseSession();
     g_composition.erase(0, n);
     RefreshCandidates();
     return true;
@@ -738,6 +842,12 @@ void IME_ClearComposition()
 {
     g_composition.clear();
     g_candidates.clear();
+    ResetPhraseSession();
+}
+
+void IME_FlushPhraseSession()
+{
+    RememberComposedPhrase();
 }
 
 bool IME_HasComposition()

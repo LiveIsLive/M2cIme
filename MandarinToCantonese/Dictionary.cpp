@@ -293,6 +293,7 @@ namespace
     const wchar_t* kDictFile     = L"m2c_dict.db";
     const wchar_t* kBackupFile   = L"m2c_dict.bakup.db";
     const char*    kBackupSchema = "m2c_bak";
+    const wchar_t* kUserCustomLibName = L"用户自定义词库";
 
     std::wstring GetModuleDir()
     {
@@ -892,6 +893,103 @@ void Dictionary::AddEntry(const std::wstring& word, const std::string& pinyin,
     e.nasalOnly = IsNasalOnlyPinyin(pinyin);
     e.validPinyin = IsValidPinyinSequence(pinyin);
     entries_.push_back(std::move(e));
+}
+
+bool Dictionary::AddUserCustomWordIfMissing(const std::wstring& word,
+                                            const std::string& pinyin,
+                                            std::wstring& error)
+{
+    error.clear();
+    EnsureLoaded();
+    if (word.empty() || pinyin.empty()) return false;
+
+    // entries_ 已包含当前所有词库的词条；按拼音精确匹配判断该词组是否已存在
+    for (const auto& e : entries_)
+    {
+        if (e.pinyin == pinyin) return false;
+    }
+
+    sqlite3* db = nullptr;
+    std::wstring path;
+    if (!OpenWritableDb(&db, path)) { error = L"无法打开词库数据库"; return false; }
+    EnsureSchema(db);
+
+    // 先查有没有「用户自定义词库」，没有就新建一个（按普通话词库处理，
+    // 使其出现在词库管理列表并参与同一套候选排序）
+    long long libId = 0;
+    sqlite3_stmt* stmt = nullptr;
+    const std::string libName = WideToUtf8(kUserCustomLibName);
+    if (sqlite3_prepare_v2(db,
+            "SELECT id FROM libraries WHERE name=?1 ORDER BY id LIMIT 1",
+            -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_text(stmt, 1, libName.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) libId = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+
+    ExecSql(db, "BEGIN;");
+    if (libId == 0)
+    {
+        int maxOrder = -1;
+        stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(MAX(sort_order),-1) FROM libraries WHERE type=0",
+                -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            if (sqlite3_step(stmt) == SQLITE_ROW) maxOrder = sqlite3_column_int(stmt, 0);
+            sqlite3_finalize(stmt);
+        }
+        stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "INSERT INTO libraries(name,type,sort_order) VALUES(?1,0,?2)",
+                -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            sqlite3_bind_text(stmt, 1, libName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 2, maxOrder + 1);
+            if (sqlite3_step(stmt) == SQLITE_DONE) libId = sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+        }
+        if (libId == 0)
+        {
+            ExecSql(db, "ROLLBACK;");
+            sqlite3_close(db);
+            error = L"创建用户自定义词库失败";
+            return false;
+        }
+    }
+
+    // 写入词条；各派生列与导入词库时的算法保持一致
+    const auto syllables = SplitSyllables(pinyin, pinyin);
+    const std::string initials = BuildInitials(syllables);
+    const std::string sylLens = EncodeSyllableLengths(syllables);
+    const std::string wordUtf8 = WideToUtf8(word);
+
+    stmt = nullptr;
+    const char* sql =
+        "INSERT INTO entries(word,word_trad,pinyin,initials,syl_lens,weight,source,"
+        "nasal_only,valid_pinyin,library_id)"
+        " VALUES(?1,?1,?2,?3,?4,?5,0,?6,?7,?8)";
+    bool inserted = false;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_text(stmt, 1, wordUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, pinyin.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, initials.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(stmt, 4, sylLens.data(), (int)sylLens.size(), SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 5, 1000000);
+        sqlite3_bind_int(stmt, 6, IsNasalOnlyPinyin(pinyin) ? 1 : 0);
+        sqlite3_bind_int(stmt, 7, IsValidPinyinSequence(pinyin) ? 1 : 0);
+        sqlite3_bind_int64(stmt, 8, libId);
+        inserted = (sqlite3_step(stmt) == SQLITE_DONE);
+        sqlite3_finalize(stmt);
+    }
+    ExecSql(db, inserted ? "COMMIT;" : "ROLLBACK;");
+    sqlite3_close(db);
+
+    if (!inserted) { error = L"写入用户自定义词库失败"; return false; }
+    Reload();
+    return true;
 }
 
 void Dictionary::Reload()

@@ -69,6 +69,13 @@ public:
     void AddEntry(const std::wstring& word, const std::string& pinyin,
                   int weight, LangSource source);
 
+    // 用户自定义词库：若该拼音串在当前所有词库中都没有对应词条，
+    // 则先确保存在名为「用户自定义词库」的词库（不存在时创建），
+    // 再把 word/pinyin 作为词条写入并重新加载。
+    // 返回 true 表示确实新增了词条；error 用于返回失败原因。
+    bool AddUserCustomWordIfMissing(const std::wstring& word, const std::string& pinyin,
+                                    std::wstring& error);
+
     // ===== 普通话词库管理 =====
     std::vector<MandarinLibraryInfo> GetMandarinLibraries() const;
     // 读取指定词库的全部字词及拼音（按词库中的原始顺序）
