@@ -144,13 +144,25 @@ static bool _IsLeadingDirectPunct(WCHAR en)
     return en == L',' || en == L'.' || en == L'!' || en == L'?';
 }
 
+// 组合串里的字符是否为拼音输入键。
+// 全拼只有 a-z；双拼按微软方案还把 ';' 用作 ing 韵母键（如 p; = ping）。
+// ';' 在双拼下属于拼音而非标点，不能当成标点处理，否则选词上屏时会多出一个 ';'
+// （引擎已把 ';' 连同声母一起消费，前端若再按标点补上就会重复）。
+// 引擎与前端的拼音方式由 CTextService::SetPinyinMode 保持同步。
+static bool _IsCompositionPinyinChar(WCHAR c)
+{
+    if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z'))
+        return true;
+    return c == L';' && IME_GetPinyinMode() == IME_PINYIN_DOUBLE;
+}
+
 // 组合串是否以标点开头（从头选词时，先处理最前面的标点）
 static bool _StartsWithPunct(const std::wstring& s, WCHAR* pPunct)
 {
     if (pPunct) *pPunct = 0;
     if (s.empty()) return false;
     const WCHAR c = s[0];
-    if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z'))
+    if (_IsCompositionPinyinChar(c))
         return false;
     if (pPunct) *pPunct = c;
     return true;
@@ -164,7 +176,7 @@ static std::wstring _TakeConsumedPunct(const std::wstring& before, const std::ws
     for (size_t i = 0; i < consumed && i < before.size(); ++i)
     {
         const WCHAR c = before[i];
-        if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z')) continue;
+        if (_IsCompositionPinyinChar(c)) continue;
         out.push_back(c);
     }
     return out;
