@@ -47,6 +47,7 @@ struct MandarinLibraryInfo
 // 词库浏览用的一条“字词 + 拼音”（已转成宽字符，方便界面直接显示）
 struct LibraryWordEntry
 {
+    long long    id = 0;  // entries.id，用于删除等操作
     std::wstring word;
     std::wstring pinyin;
 };
@@ -91,6 +92,7 @@ public:
     std::vector<LibraryWordEntry> GetLibraryWords(long long id) const;
     bool MoveMandarinLibrary(long long id, int direction); // direction: -1 上移, +1 下移
     bool DeleteMandarinLibrary(long long id, std::wstring& error);
+    bool DeleteLibraryEntries(long long libraryId, const std::vector<long long>& entryIds, std::wstring& error);
     bool ImportQcelLibrary(const std::wstring& qcelPath, std::wstring& outName, std::wstring& error);
     // 用同目录下的 m2c_dict.bakup.db 恢复词库表（先清空 entries/libraries，再整表导入）
     bool ResetDictionaryFromBackup(std::wstring& error);

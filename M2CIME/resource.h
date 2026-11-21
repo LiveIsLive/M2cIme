@@ -28,3 +28,6 @@
 // Dictionary viewer dialog
 #define IDC_DICT_VIEW_INFO      1201
 #define IDC_DICT_VIEW_LIST      1202
+#define IDC_DICT_VIEW_SEARCH    1203
+#define IDC_DICT_VIEW_SEARCH_MODE 1204
+#define IDC_DICT_VIEW_DELETE    1205

@@ -9,6 +9,7 @@
 #include <shellapi.h>
 #include <algorithm>
 #include <cwchar>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -61,8 +62,100 @@ namespace
 
     struct DictViewState
     {
-        std::vector<LibraryWordEntry> words;
+        std::vector<LibraryWordEntry> allWords;     // 完整词库
+        std::vector<size_t> visibleIndices;         // 当前显示的条目在 allWords 中的下标
+        std::wstring libName;
+        long long libId = 0;
+        bool isUserCustom = false;
+        int searchMode = 0;                         // 0 = 按字词搜索, 1 = 按拼音搜索
     };
+
+    // 忽略大小写的子串匹配（拼音库里为连续小写拼音，用户输入大写也能命中）
+    bool ContainsIgnoreCase(const std::wstring& text, const std::wstring& keyword)
+    {
+        if (keyword.empty()) return true;
+        if (keyword.size() > text.size()) return false;
+        const size_t last = text.size() - keyword.size();
+        for (size_t i = 0; i <= last; ++i)
+        {
+            size_t j = 0;
+            for (; j < keyword.size(); ++j)
+            {
+                if (std::towlower(text[i + j]) != std::towlower(keyword[j])) break;
+            }
+            if (j == keyword.size()) return true;
+        }
+        return false;
+    }
+
+    // 按当前搜索条件重建 visibleIndices，并刷新列表与统计标签
+    void ApplyDictViewFilter(HWND hDlg, DictViewState* st)
+    {
+        if (!st) return;
+        HWND hList = GetDlgItem(hDlg, IDC_DICT_VIEW_LIST);
+
+        std::wstring keyword;
+        if (HWND hSearch = GetDlgItem(hDlg, IDC_DICT_VIEW_SEARCH))
+        {
+            const int len = GetWindowTextLengthW(hSearch);
+            if (len > 0)
+            {
+                std::vector<wchar_t> buf((size_t)len + 1);
+                GetWindowTextW(hSearch, buf.data(), (int)buf.size());
+                keyword.assign(buf.data());
+            }
+        }
+
+        // 去掉首尾空白
+        const size_t begin = keyword.find_first_not_of(L" \t\r\n");
+        if (begin == std::wstring::npos)
+            keyword.clear();
+        else
+            keyword = keyword.substr(begin, keyword.find_last_not_of(L" \t\r\n") - begin + 1);
+
+        // 拼音模式忽略内部空白，输入 "ni hao" 也能匹配 "nihao"
+        if (st->searchMode == 1 && !keyword.empty())
+        {
+            std::wstring compact;
+            compact.reserve(keyword.size());
+            for (wchar_t c : keyword)
+                if (!std::iswspace(c)) compact.push_back(c);
+            keyword.swap(compact);
+        }
+
+        st->visibleIndices.clear();
+        if (keyword.empty())
+        {
+            st->visibleIndices.reserve(st->allWords.size());
+            for (size_t i = 0; i < st->allWords.size(); ++i)
+                st->visibleIndices.push_back(i);
+        }
+        else
+        {
+            for (size_t i = 0; i < st->allWords.size(); ++i)
+            {
+                const auto& entry = st->allWords[i];
+                const std::wstring& text =
+                    (st->searchMode == 1) ? entry.pinyin : entry.word;
+                if (ContainsIgnoreCase(text, keyword))
+                    st->visibleIndices.push_back(i);
+            }
+        }
+
+        if (hList)
+        {
+            ListView_SetItemCount(hList, (int)st->visibleIndices.size());
+            if (!st->visibleIndices.empty())
+                ListView_EnsureVisible(hList, 0, FALSE);
+        }
+
+        std::wstring info = st->libName + L"  （共 " +
+                            std::to_wstring(st->allWords.size()) + L" 个字词";
+        if (!keyword.empty())
+            info += L"，匹配 " + std::to_wstring(st->visibleIndices.size()) + L" 条";
+        info += L"）";
+        SetDlgItemTextW(hDlg, IDC_DICT_VIEW_INFO, info.c_str());
+    }
 
     INT_PTR CALLBACK DictViewDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
     {
@@ -83,10 +176,22 @@ namespace
             {
                 std::wstring title = L"查看词库 - " + lib->name;
                 SetWindowTextW(hDlg, title.c_str());
-                st->words = Dictionary::Instance().GetLibraryWords(lib->id);
-                std::wstring info = lib->name + L"  （共 " +
-                                    std::to_wstring(st->words.size()) + L" 个字词）";
-                SetDlgItemTextW(hDlg, IDC_DICT_VIEW_INFO, info.c_str());
+                st->libId = lib->id;
+                st->libName = lib->name;
+                st->isUserCustom = (lib->name == L"用户自定义词库");
+                st->allWords = Dictionary::Instance().GetLibraryWords(lib->id);
+            }
+
+            HWND hDelete = GetDlgItem(hDlg, IDC_DICT_VIEW_DELETE);
+            if (hDelete)
+                ShowWindow(hDelete, (st && st->isUserCustom) ? SW_SHOW : SW_HIDE);
+
+            HWND hMode = GetDlgItem(hDlg, IDC_DICT_VIEW_SEARCH_MODE);
+            if (hMode)
+            {
+                ComboBox_AddString(hMode, L"按字词");
+                ComboBox_AddString(hMode, L"按拼音");
+                ComboBox_SetCurSel(hMode, 0);
             }
 
             HWND hList = GetDlgItem(hDlg, IDC_DICT_VIEW_LIST);
@@ -102,8 +207,9 @@ namespace
                 col.pszText = const_cast<wchar_t*>(L"拼音");
                 ListView_InsertColumn(hList, 1, &col);
                 // 词库可能有数万条；LVS_OWNERDATA 只在需要绘制时取数据，避免逐条插入卡顿
-                ListView_SetItemCount(hList, (int)st->words.size());
             }
+
+            ApplyDictViewFilter(hDlg, st);
             return TRUE;
         }
         case WM_NOTIFY:
@@ -115,9 +221,10 @@ namespace
                 auto* di = reinterpret_cast<NMLVDISPINFOW*>(lParam);
                 if (st && (di->item.mask & LVIF_TEXT) && di->item.pszText &&
                     di->item.cchTextMax > 0 && di->item.iItem >= 0 &&
-                    di->item.iItem < (int)st->words.size())
+                    di->item.iItem < (int)st->visibleIndices.size())
                 {
-                    const auto& entry = st->words[(size_t)di->item.iItem];
+                    const auto& entry =
+                        st->allWords[st->visibleIndices[(size_t)di->item.iItem]];
                     const std::wstring& text =
                         (di->item.iSubItem == 0) ? entry.word : entry.pinyin;
                     const size_t n = (std::min)(text.size(), (size_t)di->item.cchTextMax - 1);
@@ -129,12 +236,68 @@ namespace
             break;
         }
         case WM_COMMAND:
-            if (LOWORD(wParam) == IDCANCEL)
+        {
+            const WORD id = LOWORD(wParam);
+            const WORD code = HIWORD(wParam);
+            auto* st = reinterpret_cast<DictViewState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+            if (id == IDCANCEL)
             {
                 EndDialog(hDlg, IDCANCEL);
                 return TRUE;
             }
+            if (st && id == IDC_DICT_VIEW_SEARCH && code == EN_CHANGE)
+            {
+                ApplyDictViewFilter(hDlg, st);
+                return TRUE;
+            }
+            if (st && id == IDC_DICT_VIEW_SEARCH_MODE && code == CBN_SELCHANGE)
+            {
+                HWND hMode = reinterpret_cast<HWND>(lParam);
+                st->searchMode = (hMode && ComboBox_GetCurSel(hMode) == 1) ? 1 : 0;
+                ApplyDictViewFilter(hDlg, st);
+                return TRUE;
+            }
+            if (st && id == IDC_DICT_VIEW_DELETE)
+            {
+                if (!st->isUserCustom) return TRUE;
+                HWND hList = GetDlgItem(hDlg, IDC_DICT_VIEW_LIST);
+                if (!hList) return TRUE;
+
+                std::vector<long long> entryIds;
+                int i = -1;
+                while ((i = ListView_GetNextItem(hList, i, LVNI_SELECTED)) != -1)
+                {
+                    if (i >= 0 && i < (int)st->visibleIndices.size())
+                    {
+                        const auto& entry = st->allWords[st->visibleIndices[(size_t)i]];
+                        if (entry.id > 0) entryIds.push_back(entry.id);
+                    }
+                }
+
+                if (entryIds.empty())
+                {
+                    MessageBoxW(hDlg, L"请先选择要删除的字词。", L"删除词条", MB_OK | MB_ICONINFORMATION);
+                    return TRUE;
+                }
+
+                std::wstring prompt = L"确定要删除选中的 " + std::to_wstring(entryIds.size()) + L" 个字词吗？";
+                if (MessageBoxW(hDlg, prompt.c_str(), L"删除词条", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+                    return TRUE;
+
+                std::wstring err;
+                if (!Dictionary::Instance().DeleteLibraryEntries(st->libId, entryIds, err))
+                {
+                    if (err.empty()) err = L"删除失败";
+                    MessageBoxW(hDlg, err.c_str(), L"删除词条", MB_OK | MB_ICONWARNING);
+                    return TRUE;
+                }
+
+                st->allWords = Dictionary::Instance().GetLibraryWords(st->libId);
+                ApplyDictViewFilter(hDlg, st);
+                return TRUE;
+            }
             break;
+        }
         case WM_CLOSE:
             EndDialog(hDlg, IDCANCEL);
             return TRUE;

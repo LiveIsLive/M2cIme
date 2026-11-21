@@ -1168,17 +1168,19 @@ std::vector<LibraryWordEntry> Dictionary::GetLibraryWords(long long id) const
     }
 
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT word, pinyin FROM entries WHERE library_id=?1 ORDER BY id";
+    const char* sql = "SELECT id, word, pinyin FROM entries WHERE library_id=?1 ORDER BY id";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
     {
         sqlite3_bind_int64(stmt, 1, id);
         while (sqlite3_step(stmt) == SQLITE_ROW)
         {
-            const unsigned char* word8 = sqlite3_column_text(stmt, 0);
-            const unsigned char* py8 = sqlite3_column_text(stmt, 1);
+            const long long entryId = sqlite3_column_int64(stmt, 0);
+            const unsigned char* word8 = sqlite3_column_text(stmt, 1);
+            const unsigned char* py8 = sqlite3_column_text(stmt, 2);
             if (!word8 || !py8) continue;
 
             LibraryWordEntry item;
+            item.id = entryId;
             item.word = Utf8ToWide(reinterpret_cast<const char*>(word8));
             item.pinyin = Utf8ToWide(reinterpret_cast<const char*>(py8));
             if (!item.word.empty()) words.push_back(std::move(item));
@@ -1251,6 +1253,68 @@ bool Dictionary::DeleteMandarinLibrary(long long id, std::wstring& error)
     sqlite3_bind_int64(del,1,id); sqlite3_step(del); sqlite3_finalize(del);
     ExecSql(db, "COMMIT;");
     sqlite3_close(db);
+    Reload();
+    return true;
+}
+
+bool Dictionary::DeleteLibraryEntries(long long libraryId, const std::vector<long long>& entryIds, std::wstring& error)
+{
+    error.clear();
+    if (libraryId <= 0 || entryIds.empty()) return true;
+
+    sqlite3* db = nullptr;
+    std::wstring path;
+    if (!OpenWritableDb(&db, path)) { error = L"无法打开词库数据库"; return false; }
+    EnsureSchema(db);
+
+    // Verify library exists and is mandarin (user custom is mandarin).
+    int type = -1;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT type FROM libraries WHERE id=?1", -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_int64(stmt, 1, libraryId);
+        if (sqlite3_step(stmt) == SQLITE_ROW) type = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+    if (type != 0)
+    {
+        sqlite3_close(db);
+        error = L"只能删除普通话词库中的词条";
+        return false;
+    }
+
+    ExecSql(db, "BEGIN;");
+    sqlite3_stmt* del = nullptr;
+    bool ok = (sqlite3_prepare_v2(db,
+        "DELETE FROM entries WHERE id=?1 AND library_id=?2", -1, &del, nullptr) == SQLITE_OK);
+    if (ok)
+    {
+        for (long long entryId : entryIds)
+        {
+            if (entryId <= 0) continue;
+            sqlite3_reset(del);
+            sqlite3_clear_bindings(del);
+            sqlite3_bind_int64(del, 1, entryId);
+            sqlite3_bind_int64(del, 2, libraryId);
+            if (sqlite3_step(del) != SQLITE_DONE)
+            {
+                ok = false;
+                break;
+            }
+        }
+        sqlite3_finalize(del);
+    }
+
+    if (ok) ExecSql(db, "COMMIT;");
+    else ExecSql(db, "ROLLBACK;");
+    sqlite3_close(db);
+
+    if (!ok)
+    {
+        error = L"删除词条失败";
+        return false;
+    }
+
     Reload();
     return true;
 }
