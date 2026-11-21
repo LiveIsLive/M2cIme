@@ -28,6 +28,10 @@ namespace
     // 用空格逐音节上屏后，下一次字母输入仍属于同一个词组，不能归档
     bool         g_syllableSpacePending = false;
 
+    // 本次拼音输入中已经在候选框选过几次词。
+    // 只有「一次选词就完成了整串拼音」才做权重学习；多次选词则完全不动词库。
+    int          g_selectionCountThisInput = 0;
+
     bool g_initialized = false;
 
     void EnsureInit()
@@ -338,15 +342,19 @@ namespace
         g_committed = chosen.word;
         g_syllableSpacePending = false;
 
+        // 记录本次查询用的纯拼音，以及这是本次输入里的第几次选词。
+        // 组合串在下面会被消耗掉，所以必须提前取。
+        const std::string queryPinyin = CompositionPinyin();
+        const bool isFirstSelection = (g_selectionCountThisInput == 0);
+
         // 判断是否在重新输入刚拼出的词组。
         // 这里必须比较「当前组合串的纯拼音」，而不是当前候选自身的拼音：
         // 连续输入 hongguoduanju 时，第一次选出的候选是「红」(hong)，
         // 但此时组合串仍是 hongguoduanju；第二轮再输入整串时同样如此。
         // 若当前输入是会话拼音的前缀（含相等），说明上一句已输完，先归档上一句。
-        const std::string typedPinyin = CompositionPinyin();
-        if (g_phraseSessionActive && !typedPinyin.empty() &&
+        if (g_phraseSessionActive && !queryPinyin.empty() &&
             !g_phraseSessionPinyin.empty() &&
-            g_phraseSessionPinyin.compare(0, typedPinyin.size(), typedPinyin) == 0)
+            g_phraseSessionPinyin.compare(0, queryPinyin.size(), queryPinyin) == 0)
         {
             RememberComposedPhrase();
         }
@@ -420,6 +428,18 @@ namespace
             }
         }
 
+        ++g_selectionCountThisInput;
+
+        // 单次选词学习：整串拼音只选这一次就完成输入，且选中的不是第一候选时，
+        // 把该词提权并置顶，下次输入相同拼音即可直接按空格选中。
+        // 若还剩下拼音（需要继续选词），则完全不调整词库。
+        if (isFirstSelection && index > 0 && !queryPinyin.empty() &&
+            CompositionPinyin().empty())
+        {
+            const int mode = (g_mode == IME_MODE_CANTONESE) ? 1 : 0;
+            Dictionary::Instance().PromoteSingleChoice(chosen, queryPinyin, mode);
+        }
+
         g_candidates.clear();
         if (!g_composition.empty())
             RefreshCandidates();
@@ -486,6 +506,7 @@ void IME_SetMode(ImeInputMode mode)
         g_composition.clear();
         g_candidates.clear();
         ResetPhraseSession();
+        g_selectionCountThisInput = 0;
         // 注意：不清空 g_committed，前端仍可取走上一次提交
     }
 }
@@ -542,6 +563,7 @@ void IME_SetPinyinMode(ImePinyinMode mode)
         g_composition.clear();
         g_candidates.clear();
         ResetPhraseSession();
+        g_selectionCountThisInput = 0;
     }
 }
 
@@ -678,6 +700,8 @@ bool IME_OnChar(char ch)
     const unsigned char uch = (unsigned char)ch;
     if (isalpha(uch))
     {
+        // 当前没有待输入拼音时，新的字母意味着新一轮拼音输入
+        if (CompositionPinyin().empty()) g_selectionCountThisInput = 0;
         // 字母：追加到组合串
         g_composition.push_back((char)tolower(uch));
         RefreshCandidates();
@@ -686,6 +710,8 @@ bool IME_OnChar(char ch)
 
     if (ispunct(uch))
     {
+        // 当前没有待输入拼音时，新一轮输入从此开始
+        if (CompositionPinyin().empty()) g_selectionCountThisInput = 0;
         // 句读标点视为一次输入结束，把之前连续选出的词组归档
         if (ch == '.' || ch == '!' || ch == '?' || ch == ',' || ch == ';' || ch == ':')
             RememberComposedPhrase();
@@ -735,6 +761,7 @@ bool IME_OnChar(char ch)
             g_composition.clear();
             g_candidates.clear();
             ResetPhraseSession();  // 改为原文上屏，未完成的连续选词作废
+            g_selectionCountThisInput = 0;
             return true;
         }
         return false;
@@ -757,6 +784,7 @@ bool IME_OnBackspace()
         // 修改输入内容后，之前的连续选词不再对应当前组合串
         ResetPhraseSession();
         g_composition.pop_back();
+        if (g_composition.empty()) g_selectionCountThisInput = 0;
         RefreshCandidates();
         return true;
     }
@@ -769,6 +797,7 @@ bool IME_DeleteCompositionFront(int n)
     if ((size_t)n > g_composition.size()) n = (int)g_composition.size();
     ResetPhraseSession();
     g_composition.erase(0, n);
+    if (g_composition.empty()) g_selectionCountThisInput = 0;
     RefreshCandidates();
     return true;
 }
@@ -843,6 +872,7 @@ void IME_ClearComposition()
     g_composition.clear();
     g_candidates.clear();
     ResetPhraseSession();
+    g_selectionCountThisInput = 0;
 }
 
 void IME_FlushPhraseSession()

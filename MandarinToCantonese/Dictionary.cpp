@@ -653,6 +653,13 @@ bool Dictionary::EnsureSchema(sqlite3* db)
             return false;
     }
 
+    // 用户单次选词记忆：bit0=普通话模式，bit1=粤语模式
+    if (!ColumnExists(db, "entries", "pin_modes"))
+    {
+        if (!ExecSql(db, "ALTER TABLE entries ADD COLUMN pin_modes INTEGER NOT NULL DEFAULT 0;"))
+            return false;
+    }
+
     MigrateLegacyIfNeeded(db);
     ExecSql(db, "CREATE INDEX IF NOT EXISTS entries_library_idx ON entries(library_id);");
     return true;
@@ -785,36 +792,43 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
         sqlite3_prepare_v2(db, "SELECT word_trad FROM entries LIMIT 1", -1, &probe, nullptr) == SQLITE_OK;
     if (probe) sqlite3_finalize(probe);
     const bool hasLib = TableExists(db, "libraries") && ColumnExists(db, "entries", "library_id");
+    const bool hasPin = ColumnExists(db, "entries", "pin_modes");
+
+    // 旧词库（或只读加载时未完成迁移）可能没有 pin_modes，做兼容处理
+    const std::string pinCol = hasPin ? ", pin_modes" : "";
+    const std::string pinColE = hasPin ? ", e.pin_modes" : "";
 
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = nullptr;
+    std::string sql;
     if (hasLib && hasTrad)
     {
-        sql = "SELECT e.word, e.word_trad, e.pinyin, e.initials, e.syl_lens, e.weight, e.source,"
-              " e.nasal_only, e.valid_pinyin, COALESCE(l.sort_order,0) AS lib_prio, COALESCE(l.type,e.source) AS lib_type"
+        sql = "SELECT e.id, e.word, e.word_trad, e.pinyin, e.initials, e.syl_lens, e.weight, e.source,"
+              " e.nasal_only, e.valid_pinyin, COALESCE(l.sort_order,0) AS lib_prio, COALESCE(l.type,e.source) AS lib_type" +
+              pinColE +
               " FROM entries e LEFT JOIN libraries l ON e.library_id = l.id"
               " ORDER BY e.id";
     }
     else if (hasLib)
     {
-        sql = "SELECT e.word, e.pinyin, e.initials, e.syl_lens, e.weight, e.source,"
-              " e.nasal_only, e.valid_pinyin, COALESCE(l.sort_order,0) AS lib_prio, COALESCE(l.type,e.source) AS lib_type"
+        sql = "SELECT e.id, e.word, e.pinyin, e.initials, e.syl_lens, e.weight, e.source,"
+              " e.nasal_only, e.valid_pinyin, COALESCE(l.sort_order,0) AS lib_prio, COALESCE(l.type,e.source) AS lib_type" +
+              pinColE +
               " FROM entries e LEFT JOIN libraries l ON e.library_id = l.id"
               " ORDER BY e.id";
     }
     else if (hasTrad)
     {
-        sql = "SELECT word, word_trad, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
-              " FROM entries ORDER BY id";
+        sql = "SELECT id, word, word_trad, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin" +
+              pinCol + " FROM entries ORDER BY id";
     }
     else
     {
-        sql = "SELECT word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin"
-              " FROM entries ORDER BY id";
+        sql = "SELECT id, word, pinyin, initials, syl_lens, weight, source, nasal_only, valid_pinyin" +
+              pinCol + " FROM entries ORDER BY id";
     }
 
     size_t added = 0;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
     {
         entries_.clear();
         entries_.reserve(70000);
@@ -822,6 +836,7 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
         while (sqlite3_step(stmt) == SQLITE_ROW)
         {
             int col = 0;
+            const long long id = sqlite3_column_int64(stmt, col++);
             const unsigned char* word8 = sqlite3_column_text(stmt, col++);
             if (!word8) continue;
 
@@ -858,7 +873,10 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
                 libType = sqlite3_column_int(stmt, col++);
             }
 
+            const int pinModes = hasPin ? sqlite3_column_int(stmt, col++) : 0;
+
             DictEntry e;
+            e.id = id;
             e.word = std::move(word);
             e.wordTrad = std::move(wordTrad);
             e.pinyin = reinterpret_cast<const char*>(pinyin8);
@@ -869,6 +887,7 @@ bool Dictionary::LoadFromDatabase(const std::wstring& path)
             e.libPriority = libPrio;
             e.nasalOnly = nasalOnly != 0;
             e.validPinyin = validPinyin != 0;
+            e.pinModes = pinModes;
             entries_.push_back(std::move(e));
             ++added;
         }
@@ -989,6 +1008,87 @@ bool Dictionary::AddUserCustomWordIfMissing(const std::wstring& word,
 
     if (!inserted) { error = L"写入用户自定义词库失败"; return false; }
     Reload();
+    return true;
+}
+
+bool Dictionary::PromoteSingleChoice(const DictEntry& entry,
+                                     const std::string& queryPinyin, int mode)
+{
+    EnsureLoaded();
+    if (entry.id <= 0 || entry.pinyin.empty() || queryPinyin.empty()) return false;
+
+    // 只影响当前输入模式，避免普通话/粤语模式的个人偏好互相干扰
+    const int bit = (mode == 1) ? 2 : 1;
+
+    sqlite3* db = nullptr;
+    std::wstring path;
+    if (!OpenWritableDb(&db, path)) return false;
+    EnsureSchema(db);
+
+    // 权重提升到同拼音（以及该词条自身拼音）下的最高权重之上；
+    // 同时设一个下限，使其高于用户自定义词条的固定权重。
+    int maxWeight = 0;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "SELECT MAX(weight) FROM entries WHERE pinyin=?1 OR pinyin=?2",
+            -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_text(stmt, 1, queryPinyin.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, entry.pinyin.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) maxWeight = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+    int newWeight = maxWeight + 1;
+    if (newWeight < 1000001) newWeight = 1000001;
+
+    bool ok = true;
+    ExecSql(db, "BEGIN;");
+
+    // 先清掉同一查询拼音下其它词条的该模式置顶标记（最后一次选择生效）
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE entries SET pin_modes = pin_modes & ?1 WHERE pinyin=?2",
+            -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_int(stmt, 1, ~bit);
+        sqlite3_bind_text(stmt, 2, queryPinyin.c_str(), -1, SQLITE_TRANSIENT);
+        ok = (sqlite3_step(stmt) == SQLITE_DONE);
+        sqlite3_finalize(stmt);
+    }
+    else ok = false;
+
+    // 再给选中的词条提权并置顶。用主键定位，繁简字形转换不会影响匹配。
+    if (ok)
+    {
+        stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "UPDATE entries SET weight=?1, pin_modes=pin_modes|?2 WHERE id=?3",
+                -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            sqlite3_bind_int(stmt, 1, newWeight);
+            sqlite3_bind_int(stmt, 2, bit);
+            sqlite3_bind_int64(stmt, 3, entry.id);
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+        else ok = false;
+    }
+
+    ExecSql(db, ok ? "COMMIT;" : "ROLLBACK;");
+    sqlite3_close(db);
+    if (!ok) return false;
+
+    // 同步内存中的词条，避免为一次选词重载整本词库
+    for (DictEntry& e : entries_)
+    {
+        if (e.pinyin == queryPinyin)
+            e.pinModes &= ~bit;
+        if (e.id == entry.id)
+        {
+            e.weight = newWeight;
+            e.pinModes |= bit;
+        }
+    }
     return true;
 }
 
@@ -1305,6 +1405,9 @@ bool Dictionary::ResetDictionaryFromBackup(std::wstring& error)
 
         if (!ExecSql(db, copyLibs.c_str()) || !ExecSql(db, copyEntries.c_str()))
         { err8 = sqlite3_errmsg(db); break; }
+        // 选词记忆属于用户数据，恢复出厂词库时一并清除
+        if (!ExecSql(db, "UPDATE entries SET pin_modes=0;"))
+        { err8 = sqlite3_errmsg(db); break; }
 
         if (!ExecSql(db, "COMMIT;")) { err8 = sqlite3_errmsg(db); break; }
         inTransaction = false;
@@ -1411,9 +1514,20 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
         added.matchedLen = matchedLen;
     }
 
+    // 输入串能表示的字符个数（声母个数）。候选词的字数不能超过它，
+    // 例如 z / zi 只能显示单字，zl / zil / zili 才显示双字词。
+    const size_t inputInitials = CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery);
+    const int modeBit = (mode == 1) ? 2 : 1;
+
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
+            // 用户单次选词记忆优先：该模式下被置顶的词条排最前。
+            // 但置顶不能违背字数规则：字数超过输入可表示字符数的词条不参与置顶。
+            const bool pa = (a.pinModes & modeBit) != 0 && a.word.size() <= inputInitials;
+            const bool pb = (b.pinModes & modeBit) != 0 && b.word.size() <= inputInitials;
+            if (pa != pb) return pa;
+
             if (a.matchRank != b.matchRank) return a.matchRank < b.matchRank;
             if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
 
@@ -1432,8 +1546,17 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
             return a.weight > b.weight;
         });
 
-    const size_t inputInitials = CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery);
-    if (inputInitials >= 2)
+    if (inputInitials < 2)
+    {
+        // 一个声母只能表示一个汉字：z / zi 等输入只保留单字候选
+        result.erase(std::remove_if(result.begin(), result.end(),
+            [inputInitials](const DictEntry& e)
+            {
+                return e.word.size() > inputInitials;
+            }),
+            result.end());
+    }
+    else
     {
         result.erase(std::remove_if(result.begin(), result.end(),
             [inputInitials, plen](const DictEntry& e)
@@ -1452,7 +1575,8 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
                                                  const std::string& initialsQuery) const
 {
     std::vector<DictEntry> result = QueryOnce(pinyin, mode, initialsQuery);
-    if (initialsQuery.size() < 2) return result;
+    // 一个声母只能表示一个汉字：z / zi 等输入不再进入下面的多字候选补充逻辑
+    if (CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery) < 2) return result;
 
     const bool hasWordGroup = std::any_of(result.begin(), result.end(),
         [](const DictEntry& e) { return e.word.size() >= 2; });
@@ -1493,9 +1617,15 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
         all.push_back(std::move(added));
     }
 
+    const size_t inputInitials = CountInputInitials(initialsQuery.empty() ? pinyin : initialsQuery);
+    const int modeBit = (mode == 1) ? 2 : 1;
     std::stable_sort(all.begin(), all.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
+            const bool pa = (a.pinModes & modeBit) != 0 && a.word.size() <= inputInitials;
+            const bool pb = (b.pinModes & modeBit) != 0 && b.word.size() <= inputInitials;
+            if (pa != pb) return pa;
+
             if (a.matchedLen != b.matchedLen) return a.matchedLen > b.matchedLen;
 
             const int ta = SourceTier(a, mode);

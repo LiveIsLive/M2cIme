@@ -14,6 +14,7 @@ enum class LangSource
 // 词典条目
 struct DictEntry
 {
+    long long    id = 0;   // 词库条目 id（数据库主键；内存构造的条目为 0）
     std::wstring word;     // 汉字（简体，或词库原始写法）
     std::wstring wordTrad; // 对应的繁体写法（词库中预生成；旧词库可能为空）
     std::string  pinyin;   // 连续拼音（小写，无声调，如 "nihao"）
@@ -21,6 +22,9 @@ struct DictEntry
     std::string  sylLens;  // 各音节长度（每字节一个音节长度，"nihao" -> {2,3}），用于混拼匹配
     int          weight;   // 词频权重（越大越靠前）
     LangSource   source;   // 来源词库
+    // 用户「单次选词」记忆：按位标记哪些输入模式下该词条强制排第一。
+    // bit0=普通话模式, bit1=粤语模式；仅由用户选择行为写入，词库本身不使用。
+    int          pinModes = 0;
     int          libPriority = 0; // 普通话词库优先级（数值越小越优先，仅同为普通话时比较）
     bool         nasalOnly = false;   // 首音节是鼻音自成音节（n/ng/m/hm/hng，如「嗯」「呒」），没有真正声母
     bool         validPinyin = true;  // 拼音能否完整切分为合法音节（"nihao"=ni+hao 为 true；"n" 为 false）
@@ -75,6 +79,11 @@ public:
     // 返回 true 表示确实新增了词条；error 用于返回失败原因。
     bool AddUserCustomWordIfMissing(const std::wstring& word, const std::string& pinyin,
                                     std::wstring& error);
+
+    // 单次选词学习：用户只选了一次候选就完成本次拼音输入，且选中的不是第一候选时调用。
+    // 提升该词条权重，并标记在 mode 对应的输入模式下强制排第一；
+    // 同一查询拼音下其它词条的该模式标记会被清除，保证下次输入相同拼音时它排第一。
+    bool PromoteSingleChoice(const DictEntry& entry, const std::string& queryPinyin, int mode);
 
     // ===== 普通话词库管理 =====
     std::vector<MandarinLibraryInfo> GetMandarinLibraries() const;
