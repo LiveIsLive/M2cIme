@@ -76,14 +76,45 @@ BOOL CTextService::_MapPunct(WPARAM vk, WCHAR* pCn, WCHAR* pEn)
     return TRUE;
 }
 
-// 返回指定标点字符的全部候选形式（候选顺序根据当前中文/英文标点状态动态排列）
-// 当前每种标点默认返回 2 种：中文 / 英文；引号类（' "）额外返回中文左右配对
-static int _BuildPunctCandidates(WCHAR cn, WCHAR en, bool fFullwidth,
+// 返回指定标点字符的全部候选形式。排序规则：
+//   中文标点状态：中文标点形式优先（反斜杠键固定用顿号「、」），不受半角/全角影响；
+//   英文标点状态：半角 → ASCII 形式优先，全角 → 全角/中文形式优先。
+// 其它标点符号同样按此规则排序；引号类（' "）额外返回中文左右配对，
+// 反斜杠键额外返回两种反斜杠形式作为备选。
+static int _BuildPunctCandidates(WCHAR cn, WCHAR en, bool fChinesePunct,
                                  std::vector<std::wstring>& out)
 {
     out.clear();
-    // 先按状态排好 cn / en
-    if (fFullwidth)
+    const bool fFullWidth = (IME_GetWidthMode() == IME_WIDTH_FULLWIDTH);
+
+    if (en == L'\\')
+    {
+        // 反斜杠键：中文标点状态下顿号固定排第一；英文标点状态下按半角/全角决定
+        if (fChinesePunct)
+        {
+            out.push_back(L"\x3001");           // 、
+            out.push_back(std::wstring(1, cn)); // ＼
+            out.push_back(std::wstring(1, en)); // ASCII 反斜杠
+        }
+        else
+        {
+            if (fFullWidth)
+            {
+                out.push_back(std::wstring(1, cn)); // ＼
+                out.push_back(std::wstring(1, en)); // ASCII 反斜杠
+            }
+            else
+            {
+                out.push_back(std::wstring(1, en)); // ASCII 反斜杠
+                out.push_back(std::wstring(1, cn)); // ＼
+            }
+            out.push_back(L"\x3001");           // 、
+        }
+        return (int)out.size();
+    }
+
+    // 其它标点：中文标点状态中文形式优先；英文标点状态按全角/半角决定
+    if (fChinesePunct || fFullWidth)
     {
         out.push_back(std::wstring(1, cn));
         out.push_back(std::wstring(1, en));
