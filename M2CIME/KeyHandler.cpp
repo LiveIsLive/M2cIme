@@ -46,6 +46,26 @@ BOOL CTextService::_MapPunct(WPARAM vk, WCHAR* pCn, WCHAR* pEn)
         switch (vk)
         {
         case '1':           cn = 0xFF01;   en = L'!';  break; // ！
+        // Shift+4/6/- 只在中文标点状态下映射为 ￥/…/—；
+        // 英文标点状态保持原有按键行为（半角 $/^/_，全角由宽度模式转换）
+        case '4':
+            if (IME_GetPunctMode() == IME_PUNCT_FULLWIDTH)
+            {
+                cn = 0xFFE5;   en = L'$';  break; // ￥
+            }
+            break;
+        case '6':
+            if (IME_GetPunctMode() == IME_PUNCT_FULLWIDTH)
+            {
+                cn = 0x2026;   en = L'^';  break; // …
+            }
+            break;
+        case VK_OEM_MINUS:
+            if (IME_GetPunctMode() == IME_PUNCT_FULLWIDTH)
+            {
+                cn = 0x2014;   en = L'_';  break; // —
+            }
+            break;
         case '9':           cn = 0xFF08;   en = L'(';  break; // （
         case '0':           cn = 0xFF09;   en = L')';  break; // ）
         case VK_OEM_COMMA:  cn = 0x300A;   en = L'<';  break; // 《
@@ -146,6 +166,9 @@ static bool _MapPunctChar(WCHAR en, WCHAR* pCn)
     switch (en)
     {
     case L'!':  cn = 0xFF01; break;
+    case L'$':  cn = 0xFFE5; break; // ￥（Shift+4）
+    case L'^':  cn = 0x2026; break; // …（Shift+6）
+    case L'_':  cn = 0x2014; break; // —（Shift+-）
     case L'(':  cn = 0xFF08; break;
     case L')':  cn = 0xFF09; break;
     case L'<':  cn = 0x300A; break;
@@ -168,11 +191,14 @@ static bool _MapPunctChar(WCHAR en, WCHAR* pCn)
     return true;
 }
 
-// 需要直接上屏的首字符标点（半角形式）：, . ! ?
-// 这 4 个标点（含全角 ，。！？）不允许成为组合串/候选框上的第 1 个字符
+// 需要直接上屏的首字符标点：, . ! ? 以及中文标点模式下的 ￥ … —
+// , . ! ?（含全角 ，。！？）不允许成为组合串/候选框上的第 1 个字符；
+// ￥ … — 由 _MapPunct 仅在中文标点状态下映射，按 Shift+4/6/- 直接上屏，
+// 不受全角/半角宽度状态影响。
 static bool _IsLeadingDirectPunct(WCHAR en)
 {
-    return en == L',' || en == L'.' || en == L'!' || en == L'?';
+    return en == L',' || en == L'.' || en == L'!' || en == L'?' ||
+           en == L'$' || en == L'^' || en == L'_';
 }
 
 // 组合串里的字符是否为拼音输入键。
@@ -1057,7 +1083,11 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
     }
 
     // 1) 翻页
-    if (wParam == VK_PRIOR || wParam == VK_UP || wParam == VK_OEM_MINUS)
+    // 中文标点模式下 Shift+- 已映射为破折号，不能再被当成上一页键
+    WCHAR pageCn = 0, pageEn = 0;
+    const bool fMappedPunct = _MapPunct(wParam, &pageCn, &pageEn) != FALSE;
+    if (wParam == VK_PRIOR || wParam == VK_UP ||
+        (wParam == VK_OEM_MINUS && !fMappedPunct))
     {
         if (_pageIndex > 0) --_pageIndex;
         _keyHandledInSession = true;
