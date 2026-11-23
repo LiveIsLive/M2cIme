@@ -58,7 +58,7 @@ void CCandidateWindow::_EnsureWindow()
                                   CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
         _fontItem = CreateFontW(-20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH, L"DengXian");
     }
 }
 
