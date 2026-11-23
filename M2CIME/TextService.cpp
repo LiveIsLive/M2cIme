@@ -19,6 +19,18 @@
 #define M2C_REG_VARIANT L"Variant"
 #define M2C_REG_PINYIN  L"PinyinMode"
 
+// 激活时判断本线程是否已经拥有前台焦点。
+// TSF 的 TIP 会被加载进很多进程，ActivateEx 也可能发生在后台线程；
+// 此时不能仅凭 _IsM2CProfileActive() 就显示状态条，否则会有多个进程同时显示。
+static bool _IsCurrentThreadForeground()
+{
+    HWND hwnd = GetForegroundWindow();
+    if (hwnd == nullptr)
+        return false;
+    DWORD dwThreadId = GetWindowThreadProcessId(hwnd, nullptr);
+    return dwThreadId != 0 && dwThreadId == GetCurrentThreadId();
+}
+
 CTextService::CTextService()
     : _cRef(1)
     , _pThreadMgr(nullptr)
@@ -27,6 +39,7 @@ CTextService::CTextService()
     , _dwActiveProfileSinkCookie(TF_INVALID_COOKIE)
     , _dwCompartmentSinkCookie(TF_INVALID_COOKIE)
     , _fInCompartmentSink(false)
+    , _fThreadFocused(false)
     , _pCandidateWnd(nullptr)
     , _pLangBarButton(nullptr)
     , _pLangBarPunctButton(nullptr)
@@ -227,8 +240,9 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
     }
 
     // 自带状态条（英/普/粤 切换入口）。TIP 会被加载进所有 TSF 进程（与当前输入法无关），
-    // 因此不能激活即显示，必须按「本输入法是否为当前线程活动输入法」判定；
+    // 因此不能激活即显示，必须同时满足「本线程有键盘焦点」且「本输入法是当前输入法」；
     // 之后由线程焦点变化 / 输入法切换通知持续同步显隐。
+    _fThreadFocused = _IsCurrentThreadForeground();
     if (_pStatusBar == nullptr)
         _pStatusBar = new CStatusBar(this);
     _SyncStatusBarVisibility();
@@ -365,6 +379,7 @@ STDMETHODIMP CTextService::Deactivate()
 STDMETHODIMP CTextService::OnSetThreadFocus()
 {
     // 本线程重新获得焦点：当前输入法仍是本输入法时显示状态条
+    _fThreadFocused = true;
     _SyncStatusBarVisibility();
     return S_OK;
 }
@@ -372,6 +387,7 @@ STDMETHODIMP CTextService::OnSetThreadFocus()
 STDMETHODIMP CTextService::OnKillThreadFocus()
 {
     // 焦点离开：先把连续选出的词组归档到用户自定义词库，再清空组合串
+    _fThreadFocused = false;
     IME_FlushPhraseSession();
     IME_ClearComposition();
     _ClearPunctPending();
@@ -774,7 +790,10 @@ void CTextService::_SyncStatusBarVisibility()
 {
     if (!_pStatusBar) return;
 
-    if (_IsM2CProfileActive())
+    // 只有前台线程 + 当前输入法都是 M2C 时才显示。
+    // 仅判断 _IsM2CProfileActive() 会让后台进程里的 TIP 实例也把状态条显示出来，
+    // 于是屏幕上同时出现多条 M2C 状态条（看起来像多了一条“语言栏”）。
+    if (_fThreadFocused && _IsM2CProfileActive())
         _pStatusBar->_Show();
     else
         _pStatusBar->_Hide();

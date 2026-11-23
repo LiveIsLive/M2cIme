@@ -145,6 +145,7 @@ private:
     DWORD           _dwActiveProfileSinkCookie;
     DWORD           _dwCompartmentSinkCookie;   // 键盘开/关舱室 sink（OPENCLOSE）
     bool            _fInCompartmentSink;        // 正在处理舱室事件（防止回环）
+    bool            _fThreadFocused;            // 本线程是否拥有键盘焦点（状态条只在焦点线程显示）
 
     CCandidateWindow* _pCandidateWnd;
     CLangBarButton*   _pLangBarButton;
