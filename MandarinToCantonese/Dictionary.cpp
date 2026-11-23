@@ -1586,6 +1586,10 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
     std::stable_sort(result.begin(), result.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
+            // 字数优先：字符个数多的候选排在前面。
+            // 字数相同时才继续比较匹配度、置顶、来源和权重等原有优先级。
+            if (a.word.size() != b.word.size()) return a.word.size() > b.word.size();
+
             // 用户单次选词记忆优先：该模式下被置顶的词条排最前。
             // 但置顶不能违背字数规则：字数超过输入可表示字符数的词条不参与置顶。
             const bool pa = (a.pinModes & modeBit) != 0 && a.word.size() <= inputInitials;
@@ -1605,9 +1609,10 @@ std::vector<DictEntry> Dictionary::QueryOnce(const std::string& pinyin, int mode
                 a.libPriority != b.libPriority)
                 return a.libPriority < b.libPriority;
 
-            if (a.pinyin.size() != b.pinyin.size())
-                return a.pinyin.size() < b.pinyin.size();
-            return a.weight > b.weight;
+            // 同字数时词频优先；拼音长度只作为完全同权重时的兜底。
+            if (a.weight != b.weight)
+                return a.weight > b.weight;
+            return a.pinyin.size() < b.pinyin.size();
         });
 
     if (inputInitials < 2)
@@ -1686,6 +1691,9 @@ std::vector<DictEntry> Dictionary::GetCandidates(const std::string& pinyin, int 
     std::stable_sort(all.begin(), all.end(),
         [&](const DictEntry& a, const DictEntry& b)
         {
+            // 与主查询保持一致：字数多的候选排在前面，字数相同时再比原有优先级。
+            if (a.word.size() != b.word.size()) return a.word.size() > b.word.size();
+
             const bool pa = (a.pinModes & modeBit) != 0 && a.word.size() <= inputInitials;
             const bool pb = (b.pinModes & modeBit) != 0 && b.word.size() <= inputInitials;
             if (pa != pb) return pa;
