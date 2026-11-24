@@ -239,6 +239,25 @@ static std::wstring _TakeConsumedPunct(const std::wstring& before, const std::ws
     return out;
 }
 
+// 空格选中"当前页第一个候选"时使用的绝对下标。
+// 引擎的 IME_OnChar(' ') 固定提交候选 0；翻页后必须按候选窗的页号换算，
+// 否则会出现"候选窗显示的是当前页第 1 项、上屏的却是第 1 页第 1 项"的错位。
+static int _FirstCandidateIndexOnPage(int pageIndex)
+{
+    const int count = IME_GetCandidateCount();
+    if (count <= 0) return 0;
+    int idx = pageIndex * M2C_PAGE_SIZE;
+    if (idx < 0 || idx >= count) idx = 0;  // 页号失效时回退到第一页
+    return idx;
+}
+
+// 混合标点候选态下，前面 punctCandCount 个是标点候选，拼音候选要相应跳过。
+static int _FirstPinyinCandidateIndexOnPage(int pageIndex, int punctCandCount)
+{
+    const int idx = _FirstCandidateIndexOnPage(pageIndex) - punctCandCount;
+    return idx > 0 ? idx : 0;
+}
+
 // 在混合态候选窗中，决定展示"哪个"标点的候选：优先前标点，没有则后标点
 // 返回值：cn / en 字符；*pSide 指明来自前还是后标点
 void CTextService::_GetMixedPunctSource(WCHAR* pCn, WCHAR* pEn, PunctSide* pSide) const
@@ -912,7 +931,15 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
                 // 但这里还没选词，先把标点的修正应用，继续让拼音选词走
                 if (wParam == VK_SPACE || wParam == VK_RETURN)
                 {
-                    if (IME_OnChar(wParam == VK_SPACE ? ' ' : '\r'))
+                    // 空格：选当前页第 1 个拼音候选（不能交给 IME_OnChar，它固定选候选 0）
+                    // 回车：保持引擎"原始拼音上屏"的既有语义
+                    bool fOk = false;
+                    if (wParam == VK_SPACE)
+                        fOk = IME_SelectCandidate(
+                            _FirstPinyinCandidateIndexOnPage(_pageIndex, _mixedPunctCandCount));
+                    else
+                        fOk = IME_OnChar('\r');
+                    if (fOk)
                     {
                         IME_GetCommitted(committed, ARRAYSIZE(committed));
                         IME_ClearCommitted();
@@ -932,8 +959,15 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
             }
             else if (wParam == VK_SPACE || wParam == VK_RETURN)
             {
-                // 空格/回车：跳过了标点候选，直接选拼音第 0 个
-                if (IME_OnChar(wParam == VK_SPACE ? ' ' : '\r'))
+                // 空格：跳过标点候选，选当前页第 1 个拼音候选
+                // 回车：保持引擎"原始拼音上屏"的既有语义
+                bool fOk = false;
+                if (wParam == VK_SPACE)
+                    fOk = IME_SelectCandidate(
+                        _FirstPinyinCandidateIndexOnPage(_pageIndex, _mixedPunctCandCount));
+                else
+                    fOk = IME_OnChar('\r');
+                if (fOk)
                 {
                     IME_GetCommitted(committed, ARRAYSIZE(committed));
                     IME_ClearCommitted();
@@ -994,7 +1028,9 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
         if (_punctBeforeLen == 0)
         {
             WCHAR committed[64] = { 0 };
-            if (IME_OnChar(' '))
+            // 与按空格一致：提交当前页第 1 个候选，而不是固定提交候选 0
+            if (IME_SelectCandidate(
+                    _FirstPinyinCandidateIndexOnPage(_pageIndex, _mixedPunctCandCount)))
             {
                 IME_GetCommitted(committed, ARRAYSIZE(committed));
                 IME_ClearCommitted();
@@ -1177,7 +1213,20 @@ void CTextService::_HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WP
         if (fHadComp)
             IME_GetComposition(beforeBuf, ARRAYSIZE(beforeBuf));
 
-        if (IME_OnChar(ch))
+        bool fHandled = false;
+        if (ch == ' ' && fHadComp)
+        {
+            // 空格：选当前页第 1 个候选。IME_OnChar(' ') 固定提交候选 0，
+            // 翻页后必须与候选窗显示的页号保持一致。
+            fHandled = IME_SelectCandidate(_FirstCandidateIndexOnPage(_pageIndex));
+        }
+        else
+        {
+            // 无组合串时的空格（插入半角空格）以及其它按键仍交给引擎
+            fHandled = IME_OnChar(ch);
+        }
+
+        if (fHandled)
         {
             if (fHadComp)
             {
