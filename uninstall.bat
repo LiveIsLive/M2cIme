@@ -1,9 +1,10 @@
 @echo off
-chcp 65001 >nul
-:: M2C æ‹¼éŸ³è¾“å…¥æ³• â€”â€” å¼€å‘ç‰ˆå¸è½½
-net session >nul 2>&1
+chcp 936 >nul
+:: M2C Æ´ÒôÊäÈë·¨ ¡ª¡ª ¿ª·¢°æĞ¶ÔØ
+:: ÓÃ fsutil ¼ì²é¹ÜÀíÔ±È¨ÏŞ£¨²»ÒÀÀµ Server ·şÎñ£¬net session ÔÚ·şÎñ½ûÓÃÊ±»áÎó±¨£©
+fsutil dirty query %SystemDrive% >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [é”™è¯¯] è¯·å³é”®ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œæœ¬è„šæœ¬ã€‚
+    echo [´íÎó] ÇëÓÒ¼üÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ±¾½Å±¾¡£
     pause
     exit /b 1
 )
@@ -16,5 +17,5 @@ regsvr32 /s /u "%DIR%x64\Release\M2CIME.dll"
 taskkill /f /im ctfmon.exe >nul 2>&1
 start "" "%SystemRoot%\System32\ctfmon.exe"
 
-echo å¸è½½å®Œæˆã€‚
+echo Ğ¶ÔØÍê³É¡£
 pause

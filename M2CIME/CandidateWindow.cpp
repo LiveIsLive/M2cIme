@@ -18,6 +18,7 @@ CCandidateWindow::CCandidateWindow(CTextService* pService)
     : _pService(pService)
     , _cRef(1)
     , _hwnd(nullptr)
+    , _hwndOwner(nullptr)
     , _pageIndex(0)
     , _totalPages(1)
     , _hoverIndex(-1)
@@ -49,7 +50,7 @@ void CCandidateWindow::_EnsureWindow()
         kWndClass, L"",
         WS_POPUP | WS_BORDER,
         0, 0, kMinWidth, 100,
-        nullptr, nullptr, g_hInst, this);
+        _hwndOwner, nullptr, g_hInst, this);
 
     if (_hwnd)
     {
@@ -142,7 +143,8 @@ void CCandidateWindow::_RecalcLayout()
 void CCandidateWindow::_Update(const std::wstring& pinyin,
                                const std::vector<std::pair<std::wstring, int>>& items,
                                int pageIndex, int totalPages,
-                               const RECT* caretRect)
+                               const RECT* caretRect,
+                               HWND hwndOwner)
 {
     _pinyin = pinyin;
     _items = items;
@@ -150,7 +152,18 @@ void CCandidateWindow::_Update(const std::wstring& pinyin,
     _totalPages = totalPages;
     _hoverIndex = -1;
 
+    // TSF 规范要求候选窗归属于当前输入窗口：鼠标点击候选窗时焦点才不会
+    // 从目标程序（如记事本）的输入控件上移走，连续选词才能继续进行。
+    if (hwndOwner && IsWindow(hwndOwner) && hwndOwner != _hwnd)
+        _hwndOwner = hwndOwner;
+
     _RecalcLayout();
+
+    if (_hwnd && _hwndOwner &&
+        (HWND)GetWindowLongPtrW(_hwnd, GWLP_HWNDPARENT) != _hwndOwner)
+    {
+        SetWindowLongPtrW(_hwnd, GWLP_HWNDPARENT, (LONG_PTR)_hwndOwner);
+    }
 
     // 定位：光标左下角
     int x = caretRect ? caretRect->left : 100;
@@ -296,6 +309,13 @@ LRESULT CCandidateWindow::_OnMouseMove(int x, int y)
     return 0;
 }
 
+LRESULT CCandidateWindow::_OnLButtonDown(int /*x*/, int /*y*/)
+{
+    // 不能交给 DefWindowProc：它会把键盘焦点设置到候选窗上。
+    // 选词在 WM_LBUTTONUP 中完成，这里只需吃掉消息。
+    return 0;
+}
+
 LRESULT CCandidateWindow::_OnLButtonUp(int /*x*/, int y)
 {
     int idx = _HitTest(y);
@@ -323,7 +343,18 @@ LRESULT CALLBACK CCandidateWindow::_WndProc(HWND hwnd, UINT msg, WPARAM wParam, 
     switch (msg)
     {
     case WM_PAINT:       return pThis->_OnPaint();
+    // 鼠标按下/触摸时都不激活候选窗，避免抢走目标程序的输入焦点
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+#ifdef WM_POINTERACTIVATE
+    case WM_POINTERACTIVATE:
+        return PA_NOACTIVATE;
+#endif
     case WM_MOUSEMOVE:   return pThis->_OnMouseMove(LOWORD(lParam), HIWORD(lParam));
+    case WM_LBUTTONDOWN: return pThis->_OnLButtonDown(LOWORD(lParam), HIWORD(lParam));
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_XBUTTONDOWN: return 0;
     case WM_LBUTTONUP:   return pThis->_OnLButtonUp(LOWORD(lParam), HIWORD(lParam));
     case WM_MOUSELEAVE:
         pThis->_hoverIndex = -1;

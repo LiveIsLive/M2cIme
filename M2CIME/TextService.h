@@ -148,6 +148,7 @@ private:
     bool            _fThreadFocused;            // 本线程是否拥有键盘焦点（状态条只在焦点线程显示）
 
     CCandidateWindow* _pCandidateWnd;
+    HWND              _hwndCandidateOwner;  // 候选窗属主：当前输入控件（防止鼠标选词抢焦点）
     CLangBarButton*   _pLangBarButton;
     CLangBarPunctButton* _pLangBarPunctButton;  // 中文/英文标点切换按钮
     CLangBarWidthButton* _pLangBarWidthButton;  // 全角/半角切换按钮

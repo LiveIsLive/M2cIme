@@ -21,19 +21,24 @@ public:
     }
 
     // 刷新内容与位置（items: <候选词, 来源0普/1粤>，caretRect 为屏幕坐标，可为空）
+    // hwndOwner 为当前输入窗口：候选窗必须是它的属主窗口，否则鼠标点击选词时
+    // 焦点会落到候选窗上，目标程序无法继续输入（连续选词尤其明显）。
     void _Update(const std::wstring& pinyin,
                  const std::vector<std::pair<std::wstring, int>>& items,
                  int pageIndex, int totalPages,
-                 const RECT* caretRect);
+                 const RECT* caretRect,
+                 HWND hwndOwner = nullptr);
     void _Hide();
     void _Destroy();
 
     bool IsVisible() const { return _hwnd != nullptr && IsWindowVisible(_hwnd); }
+    HWND GetWnd() const { return _hwnd; }
 
 private:
     static LRESULT CALLBACK _WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT _OnPaint();
     LRESULT _OnMouseMove(int x, int y);
+    LRESULT _OnLButtonDown(int x, int y);
     LRESULT _OnLButtonUp(int x, int y);
 
     void _EnsureWindow();
@@ -45,6 +50,7 @@ private:
     CTextService* _pService;
     LONG _cRef;
     HWND _hwnd;
+    HWND _hwndOwner;            // 属主窗口（当前有焦点的输入控件）
 
     std::wstring _pinyin;
     std::vector<std::pair<std::wstring, int>> _items;

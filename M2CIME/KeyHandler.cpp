@@ -1348,9 +1348,33 @@ BOOL CTextService::_GetCaretRect(TfEditCookie ec, ITfContext* pContext, RECT* pr
 
 // ================= 候选窗刷新 =================
 
-void CTextService::_UpdateCandidateWindow(ITfContext* /*pContext*/, const RECT* pCaretRect)
+// 候选窗的属主窗口应是当前输入控件。优先用 ITfContextView::GetWnd，
+// 拿不到时用 Win32 GetFocus（微软 TSF/IME 规范推荐的顺序）。
+static HWND _GetInputWindow(ITfContext* pContext)
+{
+    HWND hwnd = nullptr;
+    ITfContextView* pView = nullptr;
+    if (pContext && SUCCEEDED(pContext->GetActiveView(&pView)) && pView)
+    {
+        pView->GetWnd(&hwnd);
+        pView->Release();
+    }
+    if (!hwnd || !IsWindow(hwnd))
+        hwnd = GetFocus();
+    return (hwnd && IsWindow(hwnd)) ? hwnd : nullptr;
+}
+
+void CTextService::_UpdateCandidateWindow(ITfContext* pContext, const RECT* pCaretRect)
 {
     if (!_pCandidateWnd) return;
+
+    // 有 context 时刷新属主；鼠标选词后的刷新传 nullptr，沿用已记录的属主
+    if (pContext)
+    {
+        HWND hwndInput = _GetInputWindow(pContext);
+        if (hwndInput && hwndInput != _pCandidateWnd->GetWnd())
+            _hwndCandidateOwner = hwndInput;
+    }
 
     if (!IME_HasComposition())
     {
@@ -1457,7 +1481,7 @@ void CTextService::_UpdateCandidateWindow(ITfContext* /*pContext*/, const RECT* 
     }
 
     _pCandidateWnd->_Update(comp, items, _punctPending ? 0 : _pageIndex, totalPages,
-                            hasCaret ? &caret : nullptr);
+                            hasCaret ? &caret : nullptr, _hwndCandidateOwner);
 }
 
 // ================= 鼠标点击选词（候选窗回调） =================
