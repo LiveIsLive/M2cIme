@@ -1279,6 +1279,24 @@ HRESULT CTextService::_InsertTextAtSelection(TfEditCookie ec, ITfContext* pConte
 
 // ================= 光标定位 =================
 
+// 点是否落在矩形内（带容差，兼容边框/圆角造成的微小误差）
+static bool _PointInsideRect(LONG x, LONG y, const RECT& rc, int margin)
+{
+    return x >= rc.left - margin && x <= rc.right + margin &&
+           y >= rc.top - margin && y <= rc.bottom + margin;
+}
+
+// GetTextExt 在文档未渲染/不可见时会返回全 0；reflow 未完成时也可能返回高度 0 的退化矩形。
+// 这类坐标不能用来定位候选窗，交给调用方走 GetGUIThreadInfo 兜底。
+static bool _IsUsableCaretRect(const RECT& rc)
+{
+    if (rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0)
+        return false;
+    if (rc.right < rc.left || rc.bottom <= rc.top)
+        return false;
+    return MonitorFromPoint(POINT{ rc.left, rc.top }, MONITOR_DEFAULTTONULL) != nullptr;
+}
+
 BOOL CTextService::_GetCaretRect(TfEditCookie ec, ITfContext* pContext, RECT* prc)
 {
     if (!prc) return FALSE;
@@ -1296,15 +1314,29 @@ BOOL CTextService::_GetCaretRect(TfEditCookie ec, ITfContext* pContext, RECT* pr
         RECT rc = {};
         if (SUCCEEDED(pView->GetTextExt(ec, sel.range, &rc, &fClipped)))
         {
+            // TSF 规范：GetTextExt 返回的是屏幕坐标，不能再用 ClientToScreen 转换。
+            // 以前这里无条件转换，导致窗口不在屏幕原点时（典型如 explorer.exe 地址栏）
+            // 候选窗被额外偏移一个窗口原点距离；Edge/WaterFox 最大化时原点为 0 才碰巧正常。
+            // 少数不遵守规范的应用（部分 Qt 程序）会返回客户区坐标：仅当原始点明显落在
+            // view 窗口外、而转换后能落进窗口时，才做一次兼容转换。
             HWND hwnd = nullptr;
-            if (SUCCEEDED(pView->GetWnd(&hwnd)) && hwnd)
+            if (SUCCEEDED(pView->GetWnd(&hwnd)) && hwnd && IsWindow(hwnd))
             {
-                POINT pt = { rc.left, rc.bottom };
-                ClientToScreen(hwnd, &pt);
-                prc->left = rc.left + (pt.x - rc.left);
-                prc->right = prc->left + (rc.right - rc.left);
-                prc->bottom = pt.y;
-                prc->top = prc->bottom - (rc.bottom - rc.top);
+                RECT rcWnd = {};
+                if (GetWindowRect(hwnd, &rcWnd) &&
+                    !_PointInsideRect(rc.left, rc.top, rcWnd, 16))
+                {
+                    POINT ptOrig = { rc.left, rc.top };
+                    POINT ptScreen = ptOrig;
+                    ClientToScreen(hwnd, &ptScreen);
+                    if (_PointInsideRect(ptScreen.x, ptScreen.y, rcWnd, 16))
+                        OffsetRect(&rc, ptScreen.x - ptOrig.x, ptScreen.y - ptOrig.y);
+                }
+            }
+
+            if (_IsUsableCaretRect(rc))
+            {
+                *prc = rc;
                 ok = TRUE;
             }
         }
@@ -1400,14 +1432,27 @@ void CTextService::_UpdateCandidateWindow(ITfContext* /*pContext*/, const RECT* 
     }
     else
     {
+        // 用前台线程的 GUI 信息兜底：explorer 的输入焦点可能不在 TSF 回调所在线程上。
+        DWORD tid = 0;
+        HWND hwndFg = GetForegroundWindow();
+        if (hwndFg) tid = GetWindowThreadProcessId(hwndFg, nullptr);
+        if (!tid) tid = GetCurrentThreadId();
+
         GUITHREADINFO gti = {};
         gti.cbSize = sizeof(gti);
-        if (GetGUIThreadInfo(GetCurrentThreadId(), &gti) && gti.hwndCaret)
+        if (GetGUIThreadInfo(tid, &gti) && gti.hwndCaret && IsWindow(gti.hwndCaret))
         {
-            caret = gti.rcCaret;
-            ClientToScreen(gti.hwndCaret, (POINT*)&caret);
-            ClientToScreen(gti.hwndCaret, (POINT*)&caret + 1);
-            hasCaret = true;
+            RECT rc = gti.rcCaret;
+            POINT ptTopLeft = { rc.left, rc.top };
+            POINT ptBottomRight = { rc.right, rc.bottom };
+            MapWindowPoints(gti.hwndCaret, nullptr, &ptTopLeft, 1);
+            MapWindowPoints(gti.hwndCaret, nullptr, &ptBottomRight, 1);
+            RECT rcScreen = { ptTopLeft.x, ptTopLeft.y, ptBottomRight.x, ptBottomRight.y };
+            if (_IsUsableCaretRect(rcScreen))
+            {
+                caret = rcScreen;
+                hasCaret = true;
+            }
         }
     }
 
