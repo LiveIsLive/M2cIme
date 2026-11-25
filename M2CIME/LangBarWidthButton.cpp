@@ -84,10 +84,13 @@ STDMETHODIMP CLangBarWidthButton::GetTooltipString(BSTR* pbstrToolTip)
 
 STDMETHODIMP CLangBarWidthButton::OnClick(TfLBIClick click, POINT /*pt*/, const RECT* /*prcArea*/)
 {
-    // 直接点击切换全角/半角
+    // 直接点击切换全角/半角；语言栏抢走的焦点还给原输入窗口
     (void)click;
     if (_pService)
+    {
         _pService->ToggleWidthMode();
+        _pService->RestoreInputFocus();
+    }
     return S_OK;
 }
 

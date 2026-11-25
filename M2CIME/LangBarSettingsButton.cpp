@@ -514,6 +514,10 @@ void M2CShowSettingsDialog(CTextService* pService, HWND hwndOwner)
 {
     DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_SETTINGS),
                     hwndOwner, SettingsDlgProc, (LPARAM)pService);
+
+    // 模态对话框关闭后，焦点不要把记事本等输入窗口丢掉
+    if (pService)
+        pService->RestoreInputFocus();
 }
 
 // ===== CLangBarSettingsButton =====

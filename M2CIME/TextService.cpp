@@ -42,6 +42,8 @@ CTextService::CTextService()
     , _fThreadFocused(false)
     , _pCandidateWnd(nullptr)
     , _hwndCandidateOwner(nullptr)
+    , _pFocusDoc(nullptr)
+    , _hwndFocusTarget(nullptr)
     , _pLangBarButton(nullptr)
     , _pLangBarPunctButton(nullptr)
     , _pLangBarWidthButton(nullptr)
@@ -85,6 +87,11 @@ CTextService::CTextService()
 
 CTextService::~CTextService()
 {
+    if (_pFocusDoc)
+    {
+        _pFocusDoc->Release();
+        _pFocusDoc = nullptr;
+    }
     DllRelease();
 }
 
@@ -248,6 +255,9 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
         _pStatusBar = new CStatusBar(this);
     _SyncStatusBarVisibility();
 
+    // 记下激活时的输入目标：之后点击系统语言栏按钮才能把焦点还回来
+    _RememberInputFocus(nullptr);
+
     return S_OK;
 }
 
@@ -371,6 +381,12 @@ STDMETHODIMP CTextService::Deactivate()
         _pThreadMgr->Release();
         _pThreadMgr = nullptr;
     }
+    if (_pFocusDoc)
+    {
+        _pFocusDoc->Release();
+        _pFocusDoc = nullptr;
+    }
+    _hwndFocusTarget = nullptr;
     _tfClientId = TF_CLIENTID_NULL;
     return S_OK;
 }
@@ -382,6 +398,8 @@ STDMETHODIMP CTextService::OnSetThreadFocus()
     // 本线程重新获得焦点：当前输入法仍是本输入法时显示状态条
     _fThreadFocused = true;
     _SyncStatusBarVisibility();
+    // 焦点回来后刷新记录，避免用点击语言栏之前的旧窗口恢复焦点
+    _RememberInputFocus(nullptr);
     return S_OK;
 }
 
@@ -396,6 +414,103 @@ STDMETHODIMP CTextService::OnKillThreadFocus()
     if (_pCandidateWnd) _pCandidateWnd->_Hide();
     if (_pStatusBar) _pStatusBar->_Hide();
     return S_OK;
+}
+
+// 记住"最后正在打字的窗口"和它的 TSF 文档。
+// 有 pContext 时用 ITfContextView::GetWnd（TSF 规范推荐的输入控件窗口），
+// 没有时用 GetGUIThreadInfo（线程刚获得焦点，还没有按键事件）。
+void CTextService::_RememberInputFocus(ITfContext* pContext)
+{
+    if (_pThreadMgr)
+    {
+        ITfDocumentMgr* pDoc = nullptr;
+        if (SUCCEEDED(_pThreadMgr->GetFocus(&pDoc)) && pDoc)
+        {
+            if (pDoc != _pFocusDoc)
+            {
+                if (_pFocusDoc) _pFocusDoc->Release();
+                _pFocusDoc = pDoc;
+                _pFocusDoc->AddRef();
+            }
+            pDoc->Release();
+        }
+    }
+
+    HWND hwnd = nullptr;
+    if (pContext)
+    {
+        ITfContextView* pView = nullptr;
+        if (SUCCEEDED(pContext->GetActiveView(&pView)) && pView)
+        {
+            pView->GetWnd(&hwnd);
+            pView->Release();
+        }
+    }
+    if (!hwnd || !IsWindow(hwnd))
+    {
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        if (GetGUIThreadInfo(GetCurrentThreadId(), &gti))
+            hwnd = gti.hwndFocus;
+    }
+    if (!hwnd || !IsWindow(hwnd))
+        hwnd = GetFocus();
+
+    // 输入法自己的辅助窗口不能当成输入目标
+    if (hwnd == (_pCandidateWnd ? _pCandidateWnd->GetWnd() : nullptr) ||
+        hwnd == (_pStatusBar ? _pStatusBar->GetWnd() : nullptr))
+    {
+        hwnd = nullptr;
+    }
+
+    if (hwnd && IsWindow(hwnd))
+        _hwndFocusTarget = hwnd;
+}
+
+// 系统语言栏按钮由 ctfmon/资源管理器承载，鼠标点击会抢走记事本等程序的
+// 键盘焦点。微软拼音等输入法会在按钮回调结束后把焦点还给原输入窗口，
+// 这里做同样的事：先恢复 Win32 窗口焦点，再恢复 TSF 文档焦点。
+void CTextService::RestoreInputFocus()
+{
+    HWND hwnd = _hwndFocusTarget;
+    if (!hwnd || !IsWindow(hwnd))
+        hwnd = _hwndCandidateOwner;
+
+    if (hwnd && IsWindow(hwnd))
+    {
+        const DWORD tidCur = GetCurrentThreadId();
+        const DWORD tidTarget = GetWindowThreadProcessId(hwnd, nullptr);
+
+        // 前台窗口在别的线程时，先挂接输入队列再切前台，否则 SetForegroundWindow
+        // 会被 Windows 的前台锁定策略拒绝。
+        HWND hwndFG = GetForegroundWindow();
+        if (hwndFG && hwndFG != hwnd)
+        {
+            const DWORD tidFG = GetWindowThreadProcessId(hwndFG, nullptr);
+            BOOL fAttached = (tidFG != 0 && tidFG != tidCur) &&
+                             AttachThreadInput(tidCur, tidFG, TRUE);
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            if (fAttached)
+                AttachThreadInput(tidCur, tidFG, FALSE);
+        }
+
+        // SetFocus 要求调用线程与窗口线程的输入队列相连
+        BOOL fAttachedTarget = (tidTarget != 0 && tidTarget != tidCur) &&
+                               AttachThreadInput(tidCur, tidTarget, TRUE);
+        SetFocus(hwnd);
+        if (fAttachedTarget)
+            AttachThreadInput(tidCur, tidTarget, FALSE);
+    }
+
+    // TSF 文档焦点：语言栏抢焦点时 GetFocus 可能已被置空，重新设回记录中的文档
+    if (_pThreadMgr && _pFocusDoc)
+    {
+        ITfDocumentMgr* pCur = nullptr;
+        if (FAILED(_pThreadMgr->GetFocus(&pCur)) || pCur != _pFocusDoc)
+            _pThreadMgr->SetFocus(_pFocusDoc);
+        if (pCur) pCur->Release();
+    }
 }
 
 STDMETHODIMP CTextService::OnActivated(REFCLSID clsid, REFGUID guidProfile, BOOL fActivated)

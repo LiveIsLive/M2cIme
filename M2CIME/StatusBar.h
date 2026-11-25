@@ -16,6 +16,7 @@ public:
     void _Hide();
     void _Update();          // 模式变化后刷新显示
     void _Destroy();
+    HWND GetWnd() const { return _hwnd; }
 
 private:
     static LRESULT CALLBACK _WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

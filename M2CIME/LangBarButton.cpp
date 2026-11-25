@@ -131,6 +131,8 @@ STDMETHODIMP CLangBarButton::OnMenuSelect(UINT wID)
     case 2: _pService->SetMode(IME_MODE_MANDARIN);  break;
     case 3: _pService->SetMode(IME_MODE_CANTONESE); break;
     }
+    // 菜单由系统语言栏弹出，关闭后同样要把焦点还给原输入窗口
+    _pService->RestoreInputFocus();
     return S_OK;
 }
 

@@ -575,9 +575,12 @@ STDMETHODIMP CTextService::OnSetFocus(BOOL fForeground)
     return S_OK;
 }
 
-STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* /*pContext*/, WPARAM wParam, LPARAM /*lParam*/, BOOL* pfEaten)
+STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* pContext, WPARAM wParam, LPARAM /*lParam*/, BOOL* pfEaten)
 {
     if (!pfEaten) return E_INVALIDARG;
+
+    // 每次按键都刷新输入目标，供语言栏按钮点击后把焦点还回来
+    _RememberInputFocus(pContext);
 
     *pfEaten = _IsKeyEaten(wParam, true);
 

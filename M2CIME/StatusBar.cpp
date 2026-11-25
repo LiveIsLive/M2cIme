@@ -639,18 +639,21 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
     if (clickX >= kModeRight && clickX < kWidthRight)
     {
         _pService->ToggleWidthMode();
+        _pService->RestoreInputFocus();
         _Update();
         return;
     }
     if (clickX >= kWidthRight && clickX < kPunctRight)
     {
         _pService->TogglePunctMode();
+        _pService->RestoreInputFocus();
         _Update();
         return;
     }
     if (clickX >= kPunctRight && clickX < kVariantRight)
     {
         _pService->ToggleChineseVariant();
+        _pService->RestoreInputFocus();
         _Update();
         return;
     }
@@ -677,7 +680,12 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
 
     POINT pt;
     GetCursorPos(&pt);
-    SetForegroundWindow(_hwnd);
+
+    // 不能 SetForegroundWindow(_hwnd)：状态条是"不激活"窗口，强行置前会让
+    // 记事本失去输入焦点。改为置前真正的输入控件，菜单关闭后再恢复其键盘焦点。
+    HWND hwndInput = _pService->GetFocusTarget();
+    if (hwndInput && IsWindow(hwndInput) && GetForegroundWindow() != hwndInput)
+        SetForegroundWindow(hwndInput);
 
     UINT cmd = (UINT)TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
@@ -691,6 +699,7 @@ void CStatusBar::_OnLButtonUp(LPARAM lParam)
         _pService->SetMode((ImeInputMode)(cmd - 1));
         _Update();
     }
+    _pService->RestoreInputFocus();
 }
 
 LRESULT CALLBACK CStatusBar::_WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -709,11 +718,23 @@ LRESULT CALLBACK CStatusBar::_WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     {
     case WM_PAINT:
         return pThis->_OnPaint();
+    // 状态条与输入控件同属一个线程，点击同线程窗口会抢走键盘焦点；
+    // 和候选窗一样明确拒绝激活，保证记事本等程序能继续打字。
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+#ifdef WM_POINTERACTIVATE
+    case WM_POINTERACTIVATE:
+        return PA_NOACTIVATE;
+#endif
     case WM_LBUTTONDOWN:
         pThis->_OnLButtonDown(lParam);
         return 0;
     case WM_LBUTTONUP:
         pThis->_OnLButtonUp(lParam);
+        return 0;
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_XBUTTONDOWN:
         return 0;
     case WM_MOUSEMOVE:
         pThis->_OnMouseMove(wParam, lParam);

@@ -84,7 +84,16 @@ public:
     // 候选窗鼠标点击选词回调
     void OnCandidateClicked(int itemIndexOnPage);
 
+    // 语言栏/状态条按钮点击后，把键盘焦点还给原来正在打字的窗口。
+    // 系统语言栏由 ctfmon/资源管理器承载，鼠标点击会让目标程序暂时失焦；
+    // 微软拼音等输入法都会在按钮回调结束后主动恢复焦点，这里做同样的事。
+    void RestoreInputFocus();
+    HWND GetFocusTarget() const { return _hwndFocusTarget; }
+
 private:
+    // 记住当前 TSF 文档与输入控件窗口（打字时、线程获得焦点时更新）
+    void _RememberInputFocus(ITfContext* pContext);
+
     // 按键处理（KeyHandler.cpp）
     BOOL _IsKeyEaten(WPARAM wParam, bool fTest);
     void _HandleKeyInSession(TfEditCookie ec, ITfContext* pContext, WPARAM wParam);
@@ -149,6 +158,8 @@ private:
 
     CCandidateWindow* _pCandidateWnd;
     HWND              _hwndCandidateOwner;  // 候选窗属主：当前输入控件（防止鼠标选词抢焦点）
+    ITfDocumentMgr*   _pFocusDoc;           // 最近有焦点的 TSF 文档（语言栏点击后恢复用）
+    HWND              _hwndFocusTarget;     // 最近正在打字的窗口（语言栏点击后恢复用）
     CLangBarButton*   _pLangBarButton;
     CLangBarPunctButton* _pLangBarPunctButton;  // 中文/英文标点切换按钮
     CLangBarWidthButton* _pLangBarWidthButton;  // 全角/半角切换按钮

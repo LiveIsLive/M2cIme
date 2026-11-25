@@ -83,10 +83,13 @@ STDMETHODIMP CLangBarVariantButton::GetTooltipString(BSTR* pbstrToolTip)
 
 STDMETHODIMP CLangBarVariantButton::OnClick(TfLBIClick click, POINT /*pt*/, const RECT* /*prcArea*/)
 {
-    // 直接点击切换简体/繁体
+    // 直接点击切换简体/繁体；语言栏抢走的焦点还给原输入窗口
     (void)click;
     if (_pService)
+    {
         _pService->ToggleChineseVariant();
+        _pService->RestoreInputFocus();
+    }
     return S_OK;
 }
 
