@@ -16,6 +16,13 @@ static const WCHAR* kRegPosY = L"StatusBarY";
 static const UINT_PTR kDragTimerId = 1;
 static const UINT kDragTimerMs = 15;
 
+// 焦点切换时的交接定时器：旧的状态条多留一会儿，等新实例显示后再退出，
+// 避免切换输入窗口时出现“先消失再出现”的闪烁。
+static const UINT_PTR kHideTimerId = 2;
+static const UINT kHideDelayMs = 120;
+static const UINT_PTR kRetireTimerId = 3;
+static const UINT kRetireDelayMs = 180;
+
 static const COLORREF kBg        = RGB(252, 252, 252);
 static const COLORREF kBorder    = RGB(206, 206, 206);
 static const COLORREF kBgHover   = RGB(240, 246, 253);
@@ -28,13 +35,19 @@ CStatusBar::CStatusBar(CTextService* pService)
       _dragging(false), _dragMoved(false), _suppressClick(false),
       _dragStart{}, _dragOrigin{},
       _hasCustomPos(false), _posX(0), _posY(0),
-      _tipMode{}, _tipPunct{}, _tipWidth{}, _tipVariant{}, _tipSettings{}
+      _tipMode{}, _tipPunct{}, _tipWidth{}, _tipVariant{}, _tipSettings{},
+      _mode(IME_MODE_MANDARIN), _punctMode(IME_PUNCT_HALFWIDTH),
+      _widthMode(IME_WIDTH_HALFWIDTH), _variant(IME_VARIANT_SIMPLIFIED),
+      _retired(false)
 {
+    // 退休窗口可能比 TextService 活得更久，保持 DLL 不被卸载
+    DllAddRef();
 }
 
 CStatusBar::~CStatusBar()
 {
     _Destroy();
+    DllRelease();
 }
 
 void CStatusBar::_EnsureWindow()
@@ -137,26 +150,43 @@ void CStatusBar::_EnsureTooltip()
     _UpdateTooltipText();
 }
 
+void CStatusBar::_RefreshState()
+{
+    if (!_pService) return;
+
+    ImeInputMode      mode    = _pService->GetMode();
+    ImePunctMode      punct   = _pService->GetPunctMode();
+    ImeWidthMode      width   = _pService->GetWidthMode();
+    ImeChineseVariant variant = _pService->GetChineseVariant();
+
+    bool changed = (mode != _mode || punct != _punctMode ||
+                    width != _widthMode || variant != _variant);
+    _mode = mode;
+    _punctMode = punct;
+    _widthMode = width;
+    _variant = variant;
+
+    // 状态没变就不发 TTM_UPDATETIPTEXT，避免焦点同步带来多余的消息/重绘。
+    if (changed)
+        _UpdateTooltipText();
+}
+
 void CStatusBar::_UpdateTooltipText()
 {
-    ImeInputMode mode = _pService ? _pService->GetMode() : IME_MODE_MANDARIN;
     LPCWSTR modeText = M2C_TIP_MANDARIN;
-    switch (mode)
+    switch (_mode)
     {
     case IME_MODE_ENGLISH:   modeText = M2C_TIP_ENGLISH;   break;
     case IME_MODE_CANTONESE: modeText = M2C_TIP_CANTONESE; break;
     }
     wcscpy_s(_tipMode, modeText);
 
-    ImePunctMode punctMode = _pService ? _pService->GetPunctMode() : IME_PUNCT_HALFWIDTH;
-    wcscpy_s(_tipPunct, punctMode == IME_PUNCT_FULLWIDTH ? M2C_TIP_CN_PUNCT : M2C_TIP_EN_PUNCT);
+    wcscpy_s(_tipPunct, _punctMode == IME_PUNCT_FULLWIDTH ? M2C_TIP_CN_PUNCT : M2C_TIP_EN_PUNCT);
 
-    ImeWidthMode widthMode = _pService ? _pService->GetWidthMode() : IME_WIDTH_HALFWIDTH;
-    wcscpy_s(_tipWidth, widthMode == IME_WIDTH_FULLWIDTH ? M2C_TIP_FULLWIDTH : M2C_TIP_HALFWIDTH);
+    wcscpy_s(_tipWidth, _widthMode == IME_WIDTH_FULLWIDTH ? M2C_TIP_FULLWIDTH : M2C_TIP_HALFWIDTH);
     wcscat_s(_tipWidth, L"(Shift+空格)");
 
-    ImeChineseVariant variant = _pService ? _pService->GetChineseVariant() : IME_VARIANT_SIMPLIFIED;
-    wcscpy_s(_tipVariant, variant == IME_VARIANT_TRADITIONAL ? M2C_TIP_TRADITIONAL : M2C_TIP_SIMPLIFIED);
+    wcscpy_s(_tipVariant, _variant == IME_VARIANT_TRADITIONAL ? M2C_TIP_TRADITIONAL : M2C_TIP_SIMPLIFIED);
 
     wcscpy_s(_tipSettings, M2C_TIP_SETTINGS);
 
@@ -295,6 +325,16 @@ void CStatusBar::_SavePosition(int x, int y)
 
 void CStatusBar::_Show()
 {
+    if (_retired) return;
+
+    // 焦点回来时取消上一次的延迟隐藏；窗口已经可见就不再 Show/Invalidate，
+    // 避免同一线程内重复同步显隐时产生多余重绘。
+    _CancelDelayedHide();
+    _RefreshState();
+
+    if (_hwnd && IsWindowVisible(_hwnd))
+        return;
+
     _EnsureWindow();
     if (!_hwnd) return;
     if (!_dragging)
@@ -308,15 +348,60 @@ void CStatusBar::_Show()
 
 void CStatusBar::_Hide()
 {
+    _CancelDelayedHide();
     if (_dragging)
         _CancelDrag();
     if (_hwnd && IsWindowVisible(_hwnd))
         ShowWindow(_hwnd, SW_HIDE);
 }
 
+void CStatusBar::_HideDelayed()
+{
+    if (_retired || !_hwnd || !IsWindowVisible(_hwnd)) return;
+    if (_dragging)
+        _CancelDrag();
+
+    // 重新计时：焦点在新窗口稳定前回来时，状态条保持显示。
+    KillTimer(_hwnd, kHideTimerId);
+    SetTimer(_hwnd, kHideTimerId, kHideDelayMs, nullptr);
+}
+
+void CStatusBar::_CancelDelayedHide()
+{
+    if (_hwnd)
+        KillTimer(_hwnd, kHideTimerId);
+}
+
+void CStatusBar::_Retire()
+{
+    if (_retired) return;
+
+    _CancelDelayedHide();
+    if (_hwnd && SetTimer(_hwnd, kRetireTimerId, kRetireDelayMs, nullptr) != 0)
+    {
+        KillTimer(_hwnd, kDragTimerId);
+
+        // 退休期间只作为“画面占位”留在屏幕上，不再响应点击，也不再查询服务。
+        // 新窗口的状态条会盖在它上面，定时器到点后本窗口自行销毁。
+        _dragging = false;
+        _dragMoved = false;
+        _suppressClick = false;
+        _pService = nullptr;
+        _retired = true;
+    }
+    else
+    {
+        // 连定时器都建不起来时不再交接，直接隐藏并销毁，避免留下永不消失的窗口。
+        if (_hwnd && IsWindowVisible(_hwnd))
+            ShowWindow(_hwnd, SW_HIDE);
+        delete this;
+    }
+}
+
 void CStatusBar::_Update()
 {
-    _UpdateTooltipText();
+    if (_retired) return;
+    _RefreshState();
     if (_hwnd && IsWindowVisible(_hwnd))
         InvalidateRect(_hwnd, nullptr, FALSE);
 }
@@ -325,6 +410,9 @@ void CStatusBar::_Destroy()
 {
     if (_hwnd)
     {
+        KillTimer(_hwnd, kDragTimerId);
+        KillTimer(_hwnd, kHideTimerId);
+        KillTimer(_hwnd, kRetireTimerId);
         DestroyWindow(_hwnd);   // 提示窗口作为子窗口一并销毁
         _hwnd = nullptr;
         _hwndTip = nullptr;
@@ -364,17 +452,14 @@ LRESULT CStatusBar::_OnPaint()
 
     SetBkMode(memDC, TRANSPARENT);
 
-    ImeInputMode mode = _pService ? _pService->GetMode() : IME_MODE_MANDARIN;
-    ImePunctMode punctMode = _pService ? _pService->GetPunctMode() : IME_PUNCT_HALFWIDTH;
-    ImeWidthMode widthMode = _pService ? _pService->GetWidthMode() : IME_WIDTH_HALFWIDTH;
-    ImeChineseVariant variant = _pService ? _pService->GetChineseVariant() : IME_VARIANT_SIMPLIFIED;
+    // 使用缓存状态：退休窗口也能按最后一帧的原样绘制，不会因服务释放而变色。
     LPCWSTR text = L"普";
     COLORREF color = kTextCn;
-    switch (mode)
+    switch (_mode)
     {
     case IME_MODE_ENGLISH:   text = L"英"; color = kTextEn; break;
     case IME_MODE_MANDARIN:  text = L"普"; color = kTextCn; break;
-    case IME_MODE_CANTONESE: text = (variant == IME_VARIANT_TRADITIONAL) ? L"粵" : L"粤"; color = kTextCn; break;
+    case IME_MODE_CANTONESE: text = (_variant == IME_VARIANT_TRADITIONAL) ? L"粵" : L"粤"; color = kTextCn; break;
     }
 
     // 模式字
@@ -399,8 +484,8 @@ LRESULT CStatusBar::_OnPaint()
     DeleteObject(sepPen);
 
     // 全角/半角状态字（▶ 全角 / ▷ 半角）
-    LPCWSTR widthText = (widthMode == IME_WIDTH_FULLWIDTH) ? L"\u25B6" : L"\u25B7";
-    COLORREF widthColor = (widthMode == IME_WIDTH_FULLWIDTH) ? kTextCn : kTextEn;
+    LPCWSTR widthText = (_widthMode == IME_WIDTH_FULLWIDTH) ? L"\u25B6" : L"\u25B7";
+    COLORREF widthColor = (_widthMode == IME_WIDTH_FULLWIDTH) ? kTextCn : kTextEn;
     SelectObject(memDC, _fontWidth);
     SetTextColor(memDC, widthColor);
     RECT rcWidth = rc;
@@ -409,8 +494,8 @@ LRESULT CStatusBar::_OnPaint()
     DrawTextW(memDC, widthText, 1, &rcWidth, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // 中文/英文标点状态符号（○ 中文标点 / ● 英文标点）
-    LPCWSTR punctText = (punctMode == IME_PUNCT_FULLWIDTH) ? L"\u25CB" : L"\u25CF";
-    COLORREF punctColor = (punctMode == IME_PUNCT_FULLWIDTH) ? kTextCn : kTextEn;
+    LPCWSTR punctText = (_punctMode == IME_PUNCT_FULLWIDTH) ? L"\u25CB" : L"\u25CF";
+    COLORREF punctColor = (_punctMode == IME_PUNCT_FULLWIDTH) ? kTextCn : kTextEn;
     SelectObject(memDC, _fontPunct);
     SetTextColor(memDC, punctColor);
     RECT rcPunct = rc;
@@ -419,8 +504,8 @@ LRESULT CStatusBar::_OnPaint()
     DrawTextW(memDC, punctText, 1, &rcPunct, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // 简体/繁体状态字（简 / 繁）
-    LPCWSTR variantText = (variant == IME_VARIANT_TRADITIONAL) ? L"繁" : L"简";
-    COLORREF variantColor = (variant == IME_VARIANT_TRADITIONAL) ? kTextCn : kTextEn;
+    LPCWSTR variantText = (_variant == IME_VARIANT_TRADITIONAL) ? L"繁" : L"简";
+    COLORREF variantColor = (_variant == IME_VARIANT_TRADITIONAL) ? kTextCn : kTextEn;
     SelectObject(memDC, _fontVariant);
     SetTextColor(memDC, variantColor);
     RECT rcVariant = rc;
@@ -447,7 +532,7 @@ LRESULT CStatusBar::_OnPaint()
 
 void CStatusBar::_OnLButtonDown(LPARAM lParam)
 {
-    if (!_hwnd) return;
+    if (_retired || !_hwnd) return;
 
     _dragging = true;
     _dragMoved = false;
@@ -556,6 +641,7 @@ void CStatusBar::_CancelDrag()
 
 void CStatusBar::_OnMouseMove(WPARAM wParam, LPARAM lParam)
 {
+    if (_retired) return;
     if (_dragging)
     {
         POINT pt = {};
@@ -599,6 +685,7 @@ void CStatusBar::_OnMouseMove(WPARAM wParam, LPARAM lParam)
 
 void CStatusBar::_OnLButtonUp(LPARAM lParam)
 {
+    if (_retired) return;
     if (_suppressClick)
     {
         // 拖动已由定时器结束，这次 WM_LBUTTONUP 不能再触发分区动作
@@ -743,6 +830,16 @@ LRESULT CALLBACK CStatusBar::_WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (wParam == kDragTimerId)
         {
             pThis->_OnDragTimer();
+            return 0;
+        }
+        if (wParam == kHideTimerId)
+        {
+            pThis->_Hide();
+            return 0;
+        }
+        if (wParam == kRetireTimerId)
+        {
+            delete pThis;   // _Destroy 里会 KillTimer + DestroyWindow
             return 0;
         }
         break;

@@ -14,6 +14,9 @@ public:
 
     void _Show();
     void _Hide();
+    void _HideDelayed();     // 焦点交接时延迟隐藏，避免窗口切换瞬间状态条消失
+    void _CancelDelayedHide();
+    void _Retire();          // TextService 停用时让窗口短暂留存，和新实例交接后自行销毁
     void _Update();          // 模式变化后刷新显示
     void _Destroy();
     HWND GetWnd() const { return _hwnd; }
@@ -33,6 +36,7 @@ private:
     void _LoadSavedPosition();                    // 读取用户拖动后保存的位置
     void _SavePosition(int x, int y);
     void _EnsureTooltip();
+    void _RefreshState();    // 从服务读取当前状态到缓存，退休后仍可按最后状态绘制
     void _UpdateTooltipText();
     void _RelayMouseToTooltip(UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -62,6 +66,13 @@ private:
     WCHAR _tipWidth[64];   // 全角/半角区悬停提示（当前状态 + 快捷键）
     WCHAR _tipVariant[16]; // 简体/繁体区悬停提示（当前状态）
     WCHAR _tipSettings[16];// 设置区悬停提示
+
+    // 显示状态缓存：退休窗口仍按最后状态绘制，不再依赖 TextService
+    ImeInputMode      _mode;
+    ImePunctMode      _punctMode;
+    ImeWidthMode      _widthMode;
+    ImeChineseVariant _variant;
+    bool              _retired;
 
     static const int kWidth  = 191;  // 模式 + 全角/半角 + 标点 + 简/繁 + 设置
     static const int kHeight = 34;

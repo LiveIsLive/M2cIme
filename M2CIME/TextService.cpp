@@ -263,11 +263,11 @@ STDMETHODIMP CTextService::ActivateEx(ITfThreadMgr* pThreadMgr, TfClientId tfCli
 
 STDMETHODIMP CTextService::Deactivate()
 {
-    // 销毁状态条
+    // 状态条不立即销毁：焦点切到别的线程时，新实例会先显示自己的状态条，
+    // 让旧窗口作为画面占位保留一小段时间，避免出现“消失再出现”的闪烁。
     if (_pStatusBar)
     {
-        _pStatusBar->_Destroy();
-        delete _pStatusBar;
+        _pStatusBar->_Retire();
         _pStatusBar = nullptr;
     }
 
@@ -397,6 +397,7 @@ STDMETHODIMP CTextService::OnSetThreadFocus()
 {
     // 本线程重新获得焦点：当前输入法仍是本输入法时显示状态条
     _fThreadFocused = true;
+    if (_pStatusBar) _pStatusBar->_CancelDelayedHide();
     _SyncStatusBarVisibility();
     // 焦点回来后刷新记录，避免用点击语言栏之前的旧窗口恢复焦点
     _RememberInputFocus(nullptr);
@@ -412,7 +413,8 @@ STDMETHODIMP CTextService::OnKillThreadFocus()
     _ClearPunctPending();
     _pageIndex = 0;
     if (_pCandidateWnd) _pCandidateWnd->_Hide();
-    if (_pStatusBar) _pStatusBar->_Hide();
+    // 状态条延迟隐藏：切换输入窗口时让新实例先显示，画面保持连续。
+    if (_pStatusBar) _pStatusBar->_HideDelayed();
     return S_OK;
 }
 
@@ -522,7 +524,7 @@ STDMETHODIMP CTextService::OnActivated(REFCLSID clsid, REFGUID guidProfile, BOOL
 
     BOOL fMine = IsEqualCLSID(clsid, CLSID_M2CTextService) && IsEqualGUID(guidProfile, GUID_M2CProfile);
     if (fMine && !fActivated)
-        _pStatusBar->_Hide();
+        _pStatusBar->_HideDelayed();
     else
         _SyncStatusBarVisibility();
     return S_OK;
@@ -912,5 +914,5 @@ void CTextService::_SyncStatusBarVisibility()
     if (_fThreadFocused && _IsM2CProfileActive())
         _pStatusBar->_Show();
     else
-        _pStatusBar->_Hide();
+        _pStatusBar->_HideDelayed();
 }
